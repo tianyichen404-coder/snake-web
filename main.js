@@ -401,6 +401,17 @@
     state.baseTickMs = preset.baseTickMs;
     // Minimum tick scales with base speed, so acceleration feels consistent across difficulties.
     state.minTickMs = Math.max(35, Math.round(state.baseTickMs * 0.5));
+
+    // Difficulty can affect food rules.
+    applyRedFoodBuff();
+
+    // If resized food overlaps the snake, respawn it.
+    if (state.food.x >= 0) {
+      const cells = redFoodCells();
+      const overlapSnake = cells.some((c) => state.snake.some((p) => p.x === c.x && p.y === c.y));
+      if (overlapSnake) spawnFood();
+    }
+
     updateSpeedUI();
   }
 
@@ -430,24 +441,40 @@
   }
 
   function applyRedFoodBuff() {
-    // If yellow buff active, red food becomes 2x2 and worth 15 points. Otherwise normal.
+    // Base red-food settings can depend on difficulty.
+    const easyBaseSize = 2; // easy mode: red food is 2x2
+    const baseSize = state.difficulty === 'easy' ? easyBaseSize : 1;
+    const baseValue = 10;
+
     const active = state.yellowBuffUntil > state.gameTimeMs;
-    state.foodSize = active ? 2 : 1;
-    state.foodValue = active ? 15 : 10;
+
+    if (active) {
+      // Yellow buff modifies red food.
+      // - On easy: keep 2x2, value 20, duration handled elsewhere.
+      // - On other modes: becomes 2x2, value 15.
+      state.foodSize = state.difficulty === 'easy' ? easyBaseSize : 2;
+      state.foodValue = state.difficulty === 'easy' ? 20 : 15;
+    } else {
+      state.foodSize = baseSize;
+      state.foodValue = baseValue;
+    }
+
     normalizeRedFoodPosition();
   }
 
   function applySpecialFoodEffect(kind) {
     switch (kind) {
       case SPECIAL_FOOD.GRAY: {
-        // Debuff: score -20
-        state.score = Math.max(0, state.score - 20);
+        // Debuff: score penalty (easy is lighter)
+        const penalty = state.difficulty === 'easy' ? 10 : 20;
+        state.score = Math.max(0, state.score - penalty);
         scoreEl.textContent = String(state.score);
         break;
       }
       case SPECIAL_FOOD.YELLOW: {
-        // Buff: for 10s, red food becomes 2x2 and worth 15 points
-        state.yellowBuffUntil = state.gameTimeMs + 10000;
+        // Buff: duration & red-food value differ on easy
+        const durMs = state.difficulty === 'easy' ? 15000 : 10000;
+        state.yellowBuffUntil = state.gameTimeMs + durMs;
         applyRedFoodBuff();
         break;
       }
