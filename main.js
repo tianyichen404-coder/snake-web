@@ -37,6 +37,35 @@
   const LS_BEST = 'snake_web_best_v1';
   const LS_DIFFICULTY = 'snake_web_difficulty_v1';
 
+  // Food classification (for easier future expansion)
+  const FOOD_CATEGORY = {
+    BUFF: 'buff',
+    DEBUFF: 'debuff',
+  };
+
+  // Special foods (timed spawns)
+  // Note: base red food is handled separately.
+  const SPECIAL_FOOD = {
+    YELLOW: 'yellow',
+    GRAY: 'gray',
+  };
+
+  /** @type {Record<string, {category:'buff'|'debuff', color:string, ttlMs:number, blinkMs:number}>} */
+  const SPECIAL_FOOD_DEFS = {
+    [SPECIAL_FOOD.YELLOW]: {
+      category: FOOD_CATEGORY.BUFF,
+      color: '#ffd166',
+      ttlMs: 10000,
+      blinkMs: 3000,
+    },
+    [SPECIAL_FOOD.GRAY]: {
+      category: FOOD_CATEGORY.DEBUFF,
+      color: '#9aa4b2',
+      ttlMs: 10000,
+      blinkMs: 3000,
+    },
+  };
+
   // Difficulty presets (tick interval in ms). Current game speed corresponds to "easy".
   // Larger ms = slower.
   const DIFFICULTY = {
@@ -111,7 +140,7 @@
     foodValue: 10,
 
     // special foods
-    specials: [], // {type:'yellow'|'gray', x,y, bornAt, expiresAt}
+    specials: [], // {kind:'yellow'|'gray', x,y, bornAt, expiresAt}
     nextYellowAt: 0,
     nextGrayAt: 0,
 
@@ -277,14 +306,12 @@
     const willEatRed = redFoodCells().some((c) => c.x === nx && c.y === ny);
 
     // special food collision
-    let ateYellow = false;
-    let ateGray = false;
+    const eatenSpecials = [];
     if (state.specials.length) {
       for (let i = state.specials.length - 1; i >= 0; i--) {
         const s = state.specials[i];
         if (s.x === nx && s.y === ny) {
-          if (s.type === 'yellow') ateYellow = true;
-          if (s.type === 'gray') ateGray = true;
+          eatenSpecials.push(s.kind);
           state.specials.splice(i, 1);
         }
       }
@@ -302,15 +329,9 @@
     // Move
     state.snake.unshift(newHead);
 
-    if (ateGray) {
-      state.score = Math.max(0, state.score - 20);
-      scoreEl.textContent = String(state.score);
-    }
-
-    if (ateYellow) {
-      // For 10 seconds: red food becomes 2x2 and worth 15 points
-      state.yellowBuffUntil = state.gameTimeMs + 10000;
-      applyRedFoodBuff();
+    // Apply special food effects
+    for (const kind of eatenSpecials) {
+      applySpecialFoodEffect(kind);
     }
 
     if (willEatRed) {
@@ -380,8 +401,28 @@
     normalizeRedFoodPosition();
   }
 
-  function spawnSpecial(type) {
-    // type: 'yellow' | 'gray'
+  function applySpecialFoodEffect(kind) {
+    switch (kind) {
+      case SPECIAL_FOOD.GRAY: {
+        // Debuff: score -20
+        state.score = Math.max(0, state.score - 20);
+        scoreEl.textContent = String(state.score);
+        break;
+      }
+      case SPECIAL_FOOD.YELLOW: {
+        // Buff: for 10s, red food becomes 2x2 and worth 15 points
+        state.yellowBuffUntil = state.gameTimeMs + 10000;
+        applyRedFoodBuff();
+        break;
+      }
+    }
+  }
+
+  function spawnSpecial(kind) {
+    /** kind: 'yellow' | 'gray' */
+    const def = SPECIAL_FOOD_DEFS[kind];
+    if (!def) return false;
+
     let tries = 0;
     while (tries++ < 5000) {
       const x = randInt(0, GRID - 1);
@@ -389,11 +430,11 @@
       if (!isOccupied(x, y)) {
         const bornAt = state.gameTimeMs;
         state.specials.push({
-          type,
+          kind,
           x,
           y,
           bornAt,
-          expiresAt: bornAt + 10000,
+          expiresAt: bornAt + def.ttlMs,
         });
         return true;
       }
@@ -425,18 +466,18 @@
     // Spawn scheduling
     if (state.gameTimeMs >= state.nextYellowAt) {
       // At most one yellow on board
-      const hasYellow = state.specials.some((s) => s.type === 'yellow');
-      if (!hasYellow) spawnSpecial('yellow');
+      const hasYellow = state.specials.some((s) => s.kind === SPECIAL_FOOD.YELLOW);
+      if (!hasYellow) spawnSpecial(SPECIAL_FOOD.YELLOW);
       state.nextYellowAt = state.gameTimeMs + randInt(8000, 14000);
     }
 
     if (state.gameTimeMs >= state.nextGrayAt) {
-      const grayCount = state.specials.filter((s) => s.type === 'gray').length;
+      const grayCount = state.specials.filter((s) => s.kind === SPECIAL_FOOD.GRAY).length;
       const target = grayTargetCount();
       if (grayCount < target) {
         // Attempt to spawn up to (target - grayCount)
         const want = target - grayCount;
-        for (let i = 0; i < want; i++) spawnSpecial('gray');
+        for (let i = 0; i < want; i++) spawnSpecial(SPECIAL_FOOD.GRAY);
       }
       state.nextGrayAt = state.gameTimeMs + randInt(2200, 4200);
     }
@@ -485,16 +526,15 @@
 
     // special foods (blink during last 3s)
     for (const s of state.specials) {
+      const def = SPECIAL_FOOD_DEFS[s.kind];
+      if (!def) continue;
+
       const remaining = s.expiresAt - state.gameTimeMs;
-      const blinking = remaining <= 3000;
+      const blinking = remaining <= def.blinkMs;
       const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
       if (!visible) continue;
 
-      if (s.type === 'yellow') {
-        drawCell(s.x, s.y, '#ffd166', true);
-      } else if (s.type === 'gray') {
-        drawCell(s.x, s.y, '#9aa4b2', true);
-      }
+      drawCell(s.x, s.y, def.color, true);
     }
 
     // snake
