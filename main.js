@@ -3,7 +3,7 @@
    * Snake (grid-based)
    * - Deterministic tick loop
    * - Input queue prevents instant reverse
-   * - Local best score
+   * - Timed foods with blink-before-expire
    */
 
   const canvas = document.getElementById('game');
@@ -19,8 +19,7 @@
   const btnPause = document.getElementById('btnPause');
   const btnStep = document.getElementById('btnStep');
 
-  // Grid settings
-  // Make the board a bit larger (more cells).
+  // Grid settings (more cells)
   const GRID = 30; // 30x30
   const CELL = Math.floor(canvas.width / GRID);
   const PAD = Math.floor((canvas.width - CELL * GRID) / 2);
@@ -30,7 +29,7 @@
     grid: 'rgba(255,255,255,0.04)',
     snake: '#47d16c',
     snakeHead: '#77f2a0',
-    food: '#ff4d4d',
+    red: '#ff4d4d',
     text: 'rgba(230,237,243,0.85)',
     shadow: 'rgba(0,0,0,0.35)',
   };
@@ -42,38 +41,31 @@
   const FOOD_CATEGORY = {
     BUFF: 'buff',
     DEBUFF: 'debuff',
+    NORMAL: 'normal',
   };
 
-  // Special foods (timed spawns)
-  // Note: base red food is handled separately.
-  const SPECIAL_FOOD = {
+  const FOOD_KIND = {
+    RED: 'red',
     YELLOW: 'yellow',
     GRAY: 'gray',
   };
 
-  /** @type {Record<string, {category:'buff'|'debuff', color:string, ttlMs:number, blinkMs:number, baseSize:number}>} */
-  const SPECIAL_FOOD_DEFS = {
-    [SPECIAL_FOOD.YELLOW]: {
-      category: FOOD_CATEGORY.BUFF,
-      color: '#ffd166',
-      ttlMs: 10000,
-      blinkMs: 3000,
-      baseSize: 1,
-    },
-    [SPECIAL_FOOD.GRAY]: {
-      category: FOOD_CATEGORY.DEBUFF,
-      color: '#9aa4b2',
-      ttlMs: 10000,
-      blinkMs: 3000,
-      baseSize: 1,
-    },
+  // Global TTL rule: all foods expire and blink before disappearing.
+  const FOOD_TTL_MS = 10000;
+  const FOOD_BLINK_MS = 3000;
+
+  /** @type {Record<string, {category:'normal'|'buff'|'debuff', color:string}>} */
+  const FOOD_DEFS = {
+    [FOOD_KIND.RED]: { category: FOOD_CATEGORY.NORMAL, color: COLORS.red },
+    [FOOD_KIND.YELLOW]: { category: FOOD_CATEGORY.BUFF, color: '#ffd166' },
+    [FOOD_KIND.GRAY]: { category: FOOD_CATEGORY.DEBUFF, color: '#9aa4b2' },
   };
 
   // Difficulty presets (tick interval in ms). Current game speed corresponds to "easy".
   // Larger ms = slower.
   const DIFFICULTY = {
     newbie: { label: '新手', baseTickMs: 150 },
-    easy: { label: '简单', baseTickMs: 110 }, // current default
+    easy: { label: '简单', baseTickMs: 110 },
     hard: { label: '困难', baseTickMs: 85 },
     insane: { label: '极难', baseTickMs: 65 },
   };
@@ -137,18 +129,25 @@
     dir: DIR.Right,
     nextDirQueue: [],
 
-    // base food (red)
-    food: { x: 0, y: 0 },
-    foodSize: 1,
-    foodValue: 10,
-
-    // special foods
-    specials: [], // {kind:'yellow'|'gray', x,y, size, bornAt, expiresAt}
-    nextYellowAt: 0,
-    nextGrayAt: 0,
+    // foods on board
+    foods: /** @type {Array<{id:string, kind:'red'|'yellow'|'gray', x:number, y:number, size:number, bornAt:number, expiresAt:number}>} */ ([]),
 
     // effects
     yellowBuffUntil: 0,
+
+    // spawn schedule per kind
+    nextSpawnAt: {
+      red: 0,
+      yellow: 0,
+      gray: 0,
+    },
+
+    // spawn caps to prevent the board from becoming unplayable
+    maxOnBoard: {
+      red: 3,
+      yellow: 1,
+      gray: 8, // actual target changes by difficulty
+    },
   };
 
   function loadBest() {
@@ -161,233 +160,15 @@
     localStorage.setItem(LS_BEST, String(state.best));
   }
 
-  function resetGame() {
-    state.running = true;
-    state.paused = false;
-    state.gameOver = false;
-
-    state.score = 0;
-    scoreEl.textContent = '0';
-
-    applyDifficulty(state.difficulty);
-    state.tickMs = state.baseTickMs;
-    state.accMs = 0;
-    state.lastTs = performance.now();
-    state.gameTimeMs = 0;
-
-    state.specials = [];
-    state.yellowBuffUntil = 0;
-
-    // Schedule special spawns
-    state.nextYellowAt = randInt(6000, 12000);
-    state.nextGrayAt = randInt(2500, 4500);
-
-    // Start snake centered, length 4
-    const cx = (GRID / 2) | 0;
-    const cy = (GRID / 2) | 0;
-
-    state.snake = [
-      { x: cx + 1, y: cy },
-      { x: cx, y: cy },
-      { x: cx - 1, y: cy },
-      { x: cx - 2, y: cy },
-    ];
-
-    state.dir = DIR.Right;
-    state.nextDirQueue = [];
-
-    spawnFood();
-    updateSpeedUI();
-    setStatus('进行中');
-
-    draw();
+  function loadDifficulty() {
+    const key = String(localStorage.getItem(LS_DIFFICULTY) || 'easy');
+    const resolved = key in DIFFICULTY ? key : 'easy';
+    difficultyEl.value = resolved;
+    applyDifficulty(resolved);
   }
 
-  function specialCells(s) {
-    const size = s.size || 1;
-    const cells = [];
-    for (let dy = 0; dy < size; dy++) {
-      for (let dx = 0; dx < size; dx++) {
-        cells.push({ x: s.x + dx, y: s.y + dy });
-      }
-    }
-    return cells;
-  }
-
-  function isOccupied(x, y) {
-    for (const p of state.snake) {
-      if (p.x === x && p.y === y) return true;
-    }
-
-    // base red food also blocks spawning
-    if (state.food.x >= 0) {
-      for (const c of redFoodCells()) {
-        if (c.x === x && c.y === y) return true;
-      }
-    }
-
-    for (const s of state.specials) {
-      for (const c of specialCells(s)) {
-        if (c.x === x && c.y === y) return true;
-      }
-    }
-
-    return false;
-  }
-
-  function redFoodCells() {
-    const cells = [];
-    for (let dy = 0; dy < state.foodSize; dy++) {
-      for (let dx = 0; dx < state.foodSize; dx++) {
-        cells.push({ x: state.food.x + dx, y: state.food.y + dy });
-      }
-    }
-    return cells;
-  }
-
-  function normalizeRedFoodPosition() {
-    // Ensure the top-left stays in-bounds for the current foodSize.
-    state.food.x = clampInt(state.food.x, 0, GRID - state.foodSize);
-    state.food.y = clampInt(state.food.y, 0, GRID - state.foodSize);
-  }
-
-  function spawnFood() {
-    // base red food
-    const maxX = GRID - state.foodSize;
-    const maxY = GRID - state.foodSize;
-
-    let tries = 0;
-    while (tries++ < 5000) {
-      const x = randInt(0, maxX);
-      const y = randInt(0, maxY);
-
-      // Need all occupied cells of the red food to be empty
-      let ok = true;
-      for (let dy = 0; dy < state.foodSize; dy++) {
-        for (let dx = 0; dx < state.foodSize; dx++) {
-          if (isOccupied(x + dx, y + dy)) {
-            ok = false;
-            break;
-          }
-        }
-        if (!ok) break;
-      }
-
-      if (ok) {
-        state.food = { x, y };
-        return;
-      }
-    }
-
-    // In the unlikely case the board is full.
-    state.food = { x: -1, y: -1 };
-  }
-
-  function enqueueDir(d) {
-    if (!state.running || state.gameOver) return;
-
-    const lastQueued = state.nextDirQueue.length
-      ? state.nextDirQueue[state.nextDirQueue.length - 1]
-      : null;
-    const current = lastQueued || state.dir;
-
-    // Prevent reverse
-    if (isOpposite(current, d)) return;
-
-    // Don't enqueue duplicates
-    if (current.x === d.x && current.y === d.y) return;
-
-    // Keep queue short
-    if (state.nextDirQueue.length < 2) {
-      state.nextDirQueue.push(d);
-    }
-  }
-
-  function applyQueuedDir() {
-    if (state.nextDirQueue.length) {
-      const d = state.nextDirQueue.shift();
-      if (!isOpposite(state.dir, d)) state.dir = d;
-    }
-  }
-
-  function tick() {
-    if (!state.running || state.paused || state.gameOver) return;
-
-    applyQueuedDir();
-
-    const head = state.snake[0];
-    const nx = head.x + state.dir.x;
-    const ny = head.y + state.dir.y;
-
-    // Wall collision
-    if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
-      endGame();
-      return;
-    }
-
-    const newHead = { x: nx, y: ny };
-
-    // base food collision (red food may be bigger than 1 cell)
-    const willEatRed = redFoodCells().some((c) => c.x === nx && c.y === ny);
-
-    // special food collision (some specials can be multi-cell)
-    const eatenSpecials = [];
-    if (state.specials.length) {
-      for (let i = state.specials.length - 1; i >= 0; i--) {
-        const s = state.specials[i];
-        const hit = specialCells(s).some((c) => c.x === nx && c.y === ny);
-        if (hit) {
-          eatenSpecials.push(s.kind);
-          state.specials.splice(i, 1);
-        }
-      }
-    }
-
-    // Self collision (note: tail moves unless we eat red)
-    const bodyToCheck = willEatRed ? state.snake : state.snake.slice(0, -1);
-    for (const p of bodyToCheck) {
-      if (p.x === newHead.x && p.y === newHead.y) {
-        endGame();
-        return;
-      }
-    }
-
-    // Move
-    state.snake.unshift(newHead);
-
-    // Apply special food effects
-    for (const kind of eatenSpecials) {
-      applySpecialFoodEffect(kind);
-    }
-
-    if (willEatRed) {
-      state.score += state.foodValue;
-      scoreEl.textContent = String(state.score);
-
-      if (state.score > state.best) {
-        state.best = state.score;
-        bestEl.textContent = String(state.best);
-        saveBest();
-      }
-
-      // Speed up a bit every red food
-      // Lower ms = faster
-      state.tickMs = Math.max(state.minTickMs, Math.round(state.tickMs * 0.97));
-      updateSpeedUI();
-
-      // Respawn red food (respecting current size)
-      spawnFood();
-    } else {
-      state.snake.pop();
-    }
-
-    draw();
-  }
-
-  function endGame() {
-    state.gameOver = true;
-    setStatus('游戏结束（Enter 重开）', 'over');
-    draw(true);
+  function saveDifficulty() {
+    localStorage.setItem(LS_DIFFICULTY, state.difficulty);
   }
 
   function updateSpeedUI() {
@@ -399,20 +180,25 @@
     const preset = DIFFICULTY[key] || DIFFICULTY.easy;
     state.difficulty = key in DIFFICULTY ? key : 'easy';
     state.baseTickMs = preset.baseTickMs;
-    // Minimum tick scales with base speed, so acceleration feels consistent across difficulties.
     state.minTickMs = Math.max(35, Math.round(state.baseTickMs * 0.5));
-
-    // Difficulty can affect food rules.
-    applyRedFoodBuff();
-
-    // If resized food overlaps the snake, respawn it.
-    if (state.food.x >= 0) {
-      const cells = redFoodCells();
-      const overlapSnake = cells.some((c) => state.snake.some((p) => p.x === c.x && p.y === c.y));
-      if (overlapSnake) spawnFood();
-    }
-
     updateSpeedUI();
+
+    // difficulty impacts gray footprint and gray density cap
+    state.maxOnBoard.gray = grayTargetCount() * 2; // allow more to exist since they are timed
+
+    // also refresh sizes of existing gray foods
+    for (const f of state.foods) {
+      if (f.kind === FOOD_KIND.GRAY) {
+        f.size = foodSizeForKind(f.kind);
+        f.x = clampInt(f.x, 0, GRID - f.size);
+        f.y = clampInt(f.y, 0, GRID - f.size);
+      }
+      if (f.kind === FOOD_KIND.RED) {
+        f.size = redFoodSize();
+        f.x = clampInt(f.x, 0, GRID - f.size);
+        f.y = clampInt(f.y, 0, GRID - f.size);
+      }
+    }
   }
 
   function grayTargetCount() {
@@ -430,72 +216,87 @@
     }
   }
 
-  function specialFoodSize(kind) {
-    // Gray food gets bigger on higher difficulties.
-    if (kind === SPECIAL_FOOD.GRAY) {
-      if (state.difficulty === 'hard') return 2; // 2x2
-      if (state.difficulty === 'insane') return 3; // 3x3
+  function redFoodSize() {
+    // Easy mode: red food base is 2x2. Others: 1x1.
+    const baseSize = state.difficulty === 'easy' ? 2 : 1;
+
+    // Yellow buff changes red-food behavior
+    const active = state.yellowBuffUntil > state.gameTimeMs;
+    if (!active) return baseSize;
+
+    // On non-easy modes, buff makes red food 2x2.
+    if (state.difficulty !== 'easy') return 2;
+
+    // On easy mode, it stays 2x2.
+    return baseSize;
+  }
+
+  function redFoodValue() {
+    const active = state.yellowBuffUntil > state.gameTimeMs;
+    if (!active) return 10;
+    // Easy mode buff: 20 points
+    if (state.difficulty === 'easy') return 20;
+    // Other modes buff: 15 points
+    return 15;
+  }
+
+  function foodSizeForKind(kind) {
+    if (kind === FOOD_KIND.RED) return redFoodSize();
+    if (kind === FOOD_KIND.GRAY) {
+      if (state.difficulty === 'hard') return 2;
+      if (state.difficulty === 'insane') return 3;
       return 1;
     }
-    return SPECIAL_FOOD_DEFS[kind]?.baseSize || 1;
+    return 1;
   }
 
-  function applyRedFoodBuff() {
-    // Base red-food settings can depend on difficulty.
-    const easyBaseSize = 2; // easy mode: red food is 2x2
-    const baseSize = state.difficulty === 'easy' ? easyBaseSize : 1;
-    const baseValue = 10;
-
-    const active = state.yellowBuffUntil > state.gameTimeMs;
-
-    if (active) {
-      // Yellow buff modifies red food.
-      // - On easy: keep 2x2, value 20, duration handled elsewhere.
-      // - On other modes: becomes 2x2, value 15.
-      state.foodSize = state.difficulty === 'easy' ? easyBaseSize : 2;
-      state.foodValue = state.difficulty === 'easy' ? 20 : 15;
-    } else {
-      state.foodSize = baseSize;
-      state.foodValue = baseValue;
-    }
-
-    normalizeRedFoodPosition();
+  function foodPenaltyForKind(kind) {
+    if (kind !== FOOD_KIND.GRAY) return 0;
+    return state.difficulty === 'easy' ? 10 : 20;
   }
 
-  function applySpecialFoodEffect(kind) {
-    switch (kind) {
-      case SPECIAL_FOOD.GRAY: {
-        // Debuff: score penalty (easy is lighter)
-        const penalty = state.difficulty === 'easy' ? 10 : 20;
-        state.score = Math.max(0, state.score - penalty);
-        scoreEl.textContent = String(state.score);
-        break;
-      }
-      case SPECIAL_FOOD.YELLOW: {
-        // Buff: duration & red-food value differ on easy
-        const durMs = state.difficulty === 'easy' ? 15000 : 10000;
-        state.yellowBuffUntil = state.gameTimeMs + durMs;
-        applyRedFoodBuff();
-        break;
+  function foodCells(f) {
+    const size = f.size || 1;
+    const cells = [];
+    for (let dy = 0; dy < size; dy++) {
+      for (let dx = 0; dx < size; dx++) {
+        cells.push({ x: f.x + dx, y: f.y + dy });
       }
     }
+    return cells;
   }
 
-  function spawnSpecial(kind) {
-    /** kind: 'yellow' | 'gray' */
-    const def = SPECIAL_FOOD_DEFS[kind];
+  function isOccupied(x, y) {
+    for (const p of state.snake) {
+      if (p.x === x && p.y === y) return true;
+    }
+    for (const f of state.foods) {
+      for (const c of foodCells(f)) {
+        if (c.x === x && c.y === y) return true;
+      }
+    }
+    return false;
+  }
+
+  function spawnFood(kind) {
+    const def = FOOD_DEFS[kind];
     if (!def) return false;
 
-    const size = specialFoodSize(kind);
+    const size = foodSizeForKind(kind);
     const maxX = GRID - size;
     const maxY = GRID - size;
+
+    // cap
+    const count = state.foods.filter((f) => f.kind === kind).length;
+    const cap = state.maxOnBoard[kind] ?? 999;
+    if (count >= cap) return false;
 
     let tries = 0;
     while (tries++ < 5000) {
       const x = randInt(0, maxX);
       const y = randInt(0, maxY);
 
-      // Need all cells of the special food footprint to be empty
+      // footprint must be empty
       let ok = true;
       for (let dy = 0; dy < size; dy++) {
         for (let dx = 0; dx < size; dx++) {
@@ -506,149 +307,241 @@
         }
         if (!ok) break;
       }
-
       if (!ok) continue;
 
       const bornAt = state.gameTimeMs;
-      state.specials.push({
+      const id = `${kind}:${bornAt}:${Math.random().toString(16).slice(2)}`;
+
+      state.foods.push({
+        id,
         kind,
         x,
         y,
         size,
         bornAt,
-        expiresAt: bornAt + def.ttlMs,
+        expiresAt: bornAt + FOOD_TTL_MS,
       });
+
       return true;
     }
 
     return false;
   }
 
-  function updateSpecials() {
-    // Expire
-    for (let i = state.specials.length - 1; i >= 0; i--) {
-      if (state.specials[i].expiresAt <= state.gameTimeMs) {
-        state.specials.splice(i, 1);
+  function scheduleNextSpawn(kind, minMs, maxMs) {
+    state.nextSpawnAt[kind] = state.gameTimeMs + randInt(minMs, maxMs);
+  }
+
+  function updateFoods() {
+    // expire foods
+    for (let i = state.foods.length - 1; i >= 0; i--) {
+      if (state.foods[i].expiresAt <= state.gameTimeMs) {
+        state.foods.splice(i, 1);
       }
     }
 
-    // Yellow buff expiry
-    const wasBuffActive = state.foodSize === 2;
-    const isBuffActive = state.yellowBuffUntil > state.gameTimeMs;
-    if (wasBuffActive !== isBuffActive) {
-      applyRedFoodBuff();
-      // If red food is now 2x2, ensure it's in-bounds; if it overlaps snake, respawn it.
-      if (state.food.x >= 0) {
-        const cells = redFoodCells();
-        const overlapSnake = cells.some((c) => state.snake.some((p) => p.x === c.x && p.y === c.y));
-        if (overlapSnake) spawnFood();
+    // Yellow buff expiry affects size/value of red foods
+    // Update existing red foods footprint to match current rules.
+    for (const f of state.foods) {
+      if (f.kind === FOOD_KIND.RED) {
+        const newSize = redFoodSize();
+        if (f.size !== newSize) {
+          f.size = newSize;
+          f.x = clampInt(f.x, 0, GRID - f.size);
+          f.y = clampInt(f.y, 0, GRID - f.size);
+        }
       }
     }
 
-    // Spawn scheduling
-    if (state.gameTimeMs >= state.nextYellowAt) {
-      // At most one yellow on board
-      const hasYellow = state.specials.some((s) => s.kind === SPECIAL_FOOD.YELLOW);
-      if (!hasYellow) spawnSpecial(SPECIAL_FOOD.YELLOW);
-      state.nextYellowAt = state.gameTimeMs + randInt(8000, 14000);
+    // Spawn logic: foods can spawn again 1-10 seconds after the previous spawn,
+    // even if older ones are still on the board (they will blink+expire by themselves).
+
+    // Red: ensure at least one exists when running
+    if (!state.foods.some((f) => f.kind === FOOD_KIND.RED)) {
+      spawnFood(FOOD_KIND.RED);
+      scheduleNextSpawn('red', 1000, 10000);
     }
 
-    if (state.gameTimeMs >= state.nextGrayAt) {
-      const grayCount = state.specials.filter((s) => s.kind === SPECIAL_FOOD.GRAY).length;
-      const target = grayTargetCount();
-      if (grayCount < target) {
-        // Attempt to spawn up to (target - grayCount)
-        const want = target - grayCount;
-        for (let i = 0; i < want; i++) spawnSpecial(SPECIAL_FOOD.GRAY);
+    // Red spawn cadence
+    if (state.gameTimeMs >= state.nextSpawnAt.red) {
+      spawnFood(FOOD_KIND.RED);
+      scheduleNextSpawn('red', 1000, 10000);
+    }
+
+    // Yellow: at most 1 on board
+    if (state.gameTimeMs >= state.nextSpawnAt.yellow) {
+      if (!state.foods.some((f) => f.kind === FOOD_KIND.YELLOW)) {
+        spawnFood(FOOD_KIND.YELLOW);
       }
-      state.nextGrayAt = state.gameTimeMs + randInt(2200, 4200);
+      scheduleNextSpawn('yellow', 1000, 10000);
+    }
+
+    // Gray: more frequent on harder difficulties
+    if (state.gameTimeMs >= state.nextSpawnAt.gray) {
+      spawnFood(FOOD_KIND.GRAY);
+      const baseMin = state.difficulty === 'insane' ? 900 : state.difficulty === 'hard' ? 1200 : 1800;
+      const baseMax = state.difficulty === 'insane' ? 3000 : state.difficulty === 'hard' ? 3600 : 4500;
+      scheduleNextSpawn('gray', baseMin, baseMax);
     }
   }
 
-  function loadDifficulty() {
-    const key = String(localStorage.getItem(LS_DIFFICULTY) || 'easy');
-    const resolved = key in DIFFICULTY ? key : 'easy';
-    difficultyEl.value = resolved;
-    applyDifficulty(resolved);
+  function resetGame() {
+    state.running = true;
+    state.paused = false;
+    state.gameOver = false;
+
+    state.score = 0;
+    scoreEl.textContent = '0';
+
+    applyDifficulty(state.difficulty);
+
+    state.tickMs = state.baseTickMs;
+    state.accMs = 0;
+    state.lastTs = performance.now();
+    state.gameTimeMs = 0;
+
+    state.foods = [];
+    state.yellowBuffUntil = 0;
+
+    // Start snake centered, length 4
+    const cx = (GRID / 2) | 0;
+    const cy = (GRID / 2) | 0;
+
+    state.snake = [
+      { x: cx + 1, y: cy },
+      { x: cx, y: cy },
+      { x: cx - 1, y: cy },
+      { x: cx - 2, y: cy },
+    ];
+
+    state.dir = DIR.Right;
+    state.nextDirQueue = [];
+
+    // initial spawns
+    spawnFood(FOOD_KIND.RED);
+    scheduleNextSpawn('red', 1000, 10000);
+    scheduleNextSpawn('yellow', 6000, 12000);
+    scheduleNextSpawn('gray', 2500, 4500);
+
+    updateSpeedUI();
+    setStatus('进行中');
+    draw();
   }
 
-  function saveDifficulty() {
-    localStorage.setItem(LS_DIFFICULTY, state.difficulty);
+  function enqueueDir(d) {
+    if (!state.running || state.gameOver) return;
+
+    const lastQueued = state.nextDirQueue.length
+      ? state.nextDirQueue[state.nextDirQueue.length - 1]
+      : null;
+    const current = lastQueued || state.dir;
+
+    if (isOpposite(current, d)) return;
+    if (current.x === d.x && current.y === d.y) return;
+
+    if (state.nextDirQueue.length < 2) state.nextDirQueue.push(d);
   }
 
-  function draw(showOverlay = false) {
-    // background
-    ctx.fillStyle = COLORS.bg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  function applyQueuedDir() {
+    if (!state.nextDirQueue.length) return;
+    const d = state.nextDirQueue.shift();
+    if (!isOpposite(state.dir, d)) state.dir = d;
+  }
 
-    // subtle grid
-    ctx.strokeStyle = COLORS.grid;
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= GRID; i++) {
-      const x = PAD + i * CELL + 0.5;
-      const y = PAD + i * CELL + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(PAD + 0.5, y);
-      ctx.lineTo(PAD + GRID * CELL + 0.5, y);
-      ctx.stroke();
+  function endGame() {
+    state.gameOver = true;
+    setStatus('游戏结束（Enter 重开）', 'over');
+    draw(true);
+  }
 
-      ctx.beginPath();
-      ctx.moveTo(x, PAD + 0.5);
-      ctx.lineTo(x, PAD + GRID * CELL + 0.5);
-      ctx.stroke();
+  function tryEatAt(nx, ny) {
+    /** @type {Array<'red'|'yellow'|'gray'>} */
+    const eatenKinds = [];
+
+    for (let i = state.foods.length - 1; i >= 0; i--) {
+      const f = state.foods[i];
+      const hit = foodCells(f).some((c) => c.x === nx && c.y === ny);
+      if (!hit) continue;
+
+      eatenKinds.push(f.kind);
+      state.foods.splice(i, 1);
     }
 
-    // base food (red, may be bigger)
-    if (state.food.x >= 0) {
-      const cells = redFoodCells();
-      for (const c of cells) {
-        drawCell(c.x, c.y, COLORS.food, true);
+    return eatenKinds;
+  }
+
+  function applyEatenEffects(kinds) {
+    let ateRed = false;
+
+    for (const kind of kinds) {
+      if (kind === FOOD_KIND.RED) {
+        ateRed = true;
+        const val = redFoodValue();
+        state.score += val;
+        scoreEl.textContent = String(state.score);
+
+        if (state.score > state.best) {
+          state.best = state.score;
+          bestEl.textContent = String(state.best);
+          saveBest();
+        }
+
+        // speed up
+        state.tickMs = Math.max(state.minTickMs, Math.round(state.tickMs * 0.97));
+        updateSpeedUI();
+      } else if (kind === FOOD_KIND.YELLOW) {
+        const durMs = state.difficulty === 'easy' ? 15000 : 10000;
+        state.yellowBuffUntil = state.gameTimeMs + durMs;
+      } else if (kind === FOOD_KIND.GRAY) {
+        const penalty = foodPenaltyForKind(kind);
+        state.score = Math.max(0, state.score - penalty);
+        scoreEl.textContent = String(state.score);
       }
     }
 
-    // special foods (blink during last 3s)
-    for (const s of state.specials) {
-      const def = SPECIAL_FOOD_DEFS[s.kind];
-      if (!def) continue;
+    return { ateRed };
+  }
 
-      const remaining = s.expiresAt - state.gameTimeMs;
-      const blinking = remaining <= def.blinkMs;
-      const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
-      if (!visible) continue;
+  function tick() {
+    if (!state.running || state.paused || state.gameOver) return;
 
-      for (const c of specialCells(s)) {
-        drawCell(c.x, c.y, def.color, true);
+    applyQueuedDir();
+
+    const head = state.snake[0];
+    const nx = head.x + state.dir.x;
+    const ny = head.y + state.dir.y;
+
+    if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
+      endGame();
+      return;
+    }
+
+    const newHead = { x: nx, y: ny };
+
+    // Find what we will eat on this cell
+    const eatenKinds = tryEatAt(nx, ny);
+    const willGrow = eatenKinds.includes(FOOD_KIND.RED);
+
+    // Self collision (tail moves unless we grow)
+    const bodyToCheck = willGrow ? state.snake : state.snake.slice(0, -1);
+    for (const p of bodyToCheck) {
+      if (p.x === newHead.x && p.y === newHead.y) {
+        endGame();
+        return;
       }
     }
 
-    // snake
-    for (let i = state.snake.length - 1; i >= 0; i--) {
-      const p = state.snake[i];
-      const isHead = i === 0;
-      drawCell(p.x, p.y, isHead ? COLORS.snakeHead : COLORS.snake, false);
+    // Move
+    state.snake.unshift(newHead);
+
+    // Apply effects
+    applyEatenEffects(eatenKinds);
+
+    if (!willGrow) {
+      state.snake.pop();
     }
 
-    // overlay text
-    if (!state.running) {
-      drawOverlay('按 Enter 开始', '方向键 / WASD 控制');
-    } else if (state.paused && !state.gameOver) {
-      drawOverlay('已暂停', 'Space 继续 / S 单步');
-    } else if (showOverlay && state.gameOver) {
-      drawOverlay('游戏结束', `得分 ${state.score}（Enter 重开）`);
-    }
-  }
-
-  function drawCell(gx, gy, color, isFood) {
-    const x = PAD + gx * CELL;
-    const y = PAD + gy * CELL;
-    const r = isFood ? 9 : 6;
-
-    // shadow
-    ctx.fillStyle = COLORS.shadow;
-    roundRectFill(x + 2, y + 3, CELL - 4, CELL - 4, r);
-
-    ctx.fillStyle = color;
-    roundRectFill(x + 1, y + 1, CELL - 4, CELL - 4, r);
+    draw();
   }
 
   function roundRectFill(x, y, w, h, r) {
@@ -661,6 +554,18 @@
     ctx.arcTo(x, y, x + w, y, rr);
     ctx.closePath();
     ctx.fill();
+  }
+
+  function drawCell(gx, gy, color, isFood) {
+    const x = PAD + gx * CELL;
+    const y = PAD + gy * CELL;
+    const r = isFood ? 9 : 6;
+
+    ctx.fillStyle = COLORS.shadow;
+    roundRectFill(x + 2, y + 3, CELL - 4, CELL - 4, r);
+
+    ctx.fillStyle = color;
+    roundRectFill(x + 1, y + 1, CELL - 4, CELL - 4, r);
   }
 
   function drawOverlay(title, subtitle) {
@@ -676,6 +581,58 @@
     ctx.font = '500 16px ui-sans-serif, system-ui, -apple-system, Segoe UI';
     ctx.fillStyle = 'rgba(230,237,243,0.75)';
     ctx.fillText(subtitle, canvas.width / 2, canvas.height / 2 + 20);
+  }
+
+  function draw(showOverlay = false) {
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // grid
+    ctx.strokeStyle = COLORS.grid;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= GRID; i++) {
+      const x = PAD + i * CELL + 0.5;
+      const y = PAD + i * CELL + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(PAD + 0.5, y);
+      ctx.lineTo(PAD + GRID * CELL + 0.5, y);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(x, PAD + 0.5);
+      ctx.lineTo(x, PAD + GRID * CELL + 0.5, y);
+      ctx.stroke();
+    }
+
+    // foods (blink in last 3s)
+    for (const f of state.foods) {
+      const def = FOOD_DEFS[f.kind];
+      if (!def) continue;
+
+      const remaining = f.expiresAt - state.gameTimeMs;
+      const blinking = remaining <= FOOD_BLINK_MS;
+      const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
+      if (!visible) continue;
+
+      for (const c of foodCells(f)) {
+        drawCell(c.x, c.y, def.color, true);
+      }
+    }
+
+    // snake
+    for (let i = state.snake.length - 1; i >= 0; i--) {
+      const p = state.snake[i];
+      const isHead = i === 0;
+      drawCell(p.x, p.y, isHead ? COLORS.snakeHead : COLORS.snake, false);
+    }
+
+    if (!state.running) {
+      drawOverlay('按 Enter 开始', '方向键 / WASD 控制');
+    } else if (state.paused && !state.gameOver) {
+      drawOverlay('已暂停', 'Space 继续 / S 单步');
+    } else if (showOverlay && state.gameOver) {
+      drawOverlay('游戏结束', `得分 ${state.score}（Enter 重开）`);
+    }
   }
 
   function togglePause() {
@@ -703,8 +660,8 @@
     if (!state.paused && !state.gameOver) {
       state.gameTimeMs += dt;
 
-      // update timed systems
-      updateSpecials();
+      // timed systems
+      updateFoods();
 
       state.accMs += dt;
       while (state.accMs >= state.tickMs) {
@@ -719,8 +676,6 @@
 
   function onKeyDown(e) {
     const k = e.key;
-
-    // prevent page scroll on arrows/space
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(k)) {
       e.preventDefault();
     }
@@ -741,10 +696,8 @@
         stepOnce();
         return;
       }
-      // fall through to movement handling
     }
 
-    // Movement
     switch (k) {
       case 'ArrowUp':
       case 'w':
@@ -754,7 +707,6 @@
       case 'ArrowDown':
       case 's':
       case 'S':
-        // Note: S reserved for step when paused; movement still ok when running.
         enqueueDir(DIR.Down);
         break;
       case 'ArrowLeft':
@@ -773,7 +725,6 @@
   function init() {
     loadBest();
     loadDifficulty();
-    applyRedFoodBuff();
 
     state.running = false;
     setStatus('未开始');
@@ -785,7 +736,6 @@
     btnPause.addEventListener('click', () => togglePause());
     btnStep.addEventListener('click', () => stepOnce());
 
-    // Change difficulty. If game is already running, preserve the current speed multiplier.
     difficultyEl.addEventListener('change', () => {
       const prevBase = state.baseTickMs;
       const prevTick = state.tickMs;
@@ -795,14 +745,12 @@
       saveDifficulty();
 
       if (state.running && !state.gameOver) {
-        const mul = prevBase / prevTick; // e.g. 1.30x
+        const mul = prevBase / prevTick;
         state.tickMs = Math.max(state.minTickMs, Math.round(state.baseTickMs / mul));
         updateSpeedUI();
         draw();
       }
     });
-
-    canvas.addEventListener('pointerdown', () => canvas.focus?.());
 
     requestAnimationFrame((ts) => {
       state.lastTs = ts;
