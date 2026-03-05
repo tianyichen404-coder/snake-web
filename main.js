@@ -20,7 +20,8 @@
   const btnStep = document.getElementById('btnStep');
 
   // Grid settings
-  const GRID = 24; // 24x24
+  // Make the board a bit larger (more cells).
+  const GRID = 30; // 30x30
   const CELL = Math.floor(canvas.width / GRID);
   const PAD = Math.floor((canvas.width - CELL * GRID) / 2);
 
@@ -50,19 +51,21 @@
     GRAY: 'gray',
   };
 
-  /** @type {Record<string, {category:'buff'|'debuff', color:string, ttlMs:number, blinkMs:number}>} */
+  /** @type {Record<string, {category:'buff'|'debuff', color:string, ttlMs:number, blinkMs:number, baseSize:number}>} */
   const SPECIAL_FOOD_DEFS = {
     [SPECIAL_FOOD.YELLOW]: {
       category: FOOD_CATEGORY.BUFF,
       color: '#ffd166',
       ttlMs: 10000,
       blinkMs: 3000,
+      baseSize: 1,
     },
     [SPECIAL_FOOD.GRAY]: {
       category: FOOD_CATEGORY.DEBUFF,
       color: '#9aa4b2',
       ttlMs: 10000,
       blinkMs: 3000,
+      baseSize: 1,
     },
   };
 
@@ -140,7 +143,7 @@
     foodValue: 10,
 
     // special foods
-    specials: [], // {kind:'yellow'|'gray', x,y, bornAt, expiresAt}
+    specials: [], // {kind:'yellow'|'gray', x,y, size, bornAt, expiresAt}
     nextYellowAt: 0,
     nextGrayAt: 0,
 
@@ -200,13 +203,35 @@
     draw();
   }
 
+  function specialCells(s) {
+    const size = s.size || 1;
+    const cells = [];
+    for (let dy = 0; dy < size; dy++) {
+      for (let dx = 0; dx < size; dx++) {
+        cells.push({ x: s.x + dx, y: s.y + dy });
+      }
+    }
+    return cells;
+  }
+
   function isOccupied(x, y) {
     for (const p of state.snake) {
       if (p.x === x && p.y === y) return true;
     }
-    for (const s of state.specials) {
-      if (s.x === x && s.y === y) return true;
+
+    // base red food also blocks spawning
+    if (state.food.x >= 0) {
+      for (const c of redFoodCells()) {
+        if (c.x === x && c.y === y) return true;
+      }
     }
+
+    for (const s of state.specials) {
+      for (const c of specialCells(s)) {
+        if (c.x === x && c.y === y) return true;
+      }
+    }
+
     return false;
   }
 
@@ -305,12 +330,13 @@
     // base food collision (red food may be bigger than 1 cell)
     const willEatRed = redFoodCells().some((c) => c.x === nx && c.y === ny);
 
-    // special food collision
+    // special food collision (some specials can be multi-cell)
     const eatenSpecials = [];
     if (state.specials.length) {
       for (let i = state.specials.length - 1; i >= 0; i--) {
         const s = state.specials[i];
-        if (s.x === nx && s.y === ny) {
+        const hit = specialCells(s).some((c) => c.x === nx && c.y === ny);
+        if (hit) {
           eatenSpecials.push(s.kind);
           state.specials.splice(i, 1);
         }
@@ -393,6 +419,16 @@
     }
   }
 
+  function specialFoodSize(kind) {
+    // Gray food gets bigger on higher difficulties.
+    if (kind === SPECIAL_FOOD.GRAY) {
+      if (state.difficulty === 'hard') return 2; // 2x2
+      if (state.difficulty === 'insane') return 3; // 3x3
+      return 1;
+    }
+    return SPECIAL_FOOD_DEFS[kind]?.baseSize || 1;
+  }
+
   function applyRedFoodBuff() {
     // If yellow buff active, red food becomes 2x2 and worth 15 points. Otherwise normal.
     const active = state.yellowBuffUntil > state.gameTimeMs;
@@ -423,22 +459,41 @@
     const def = SPECIAL_FOOD_DEFS[kind];
     if (!def) return false;
 
+    const size = specialFoodSize(kind);
+    const maxX = GRID - size;
+    const maxY = GRID - size;
+
     let tries = 0;
     while (tries++ < 5000) {
-      const x = randInt(0, GRID - 1);
-      const y = randInt(0, GRID - 1);
-      if (!isOccupied(x, y)) {
-        const bornAt = state.gameTimeMs;
-        state.specials.push({
-          kind,
-          x,
-          y,
-          bornAt,
-          expiresAt: bornAt + def.ttlMs,
-        });
-        return true;
+      const x = randInt(0, maxX);
+      const y = randInt(0, maxY);
+
+      // Need all cells of the special food footprint to be empty
+      let ok = true;
+      for (let dy = 0; dy < size; dy++) {
+        for (let dx = 0; dx < size; dx++) {
+          if (isOccupied(x + dx, y + dy)) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) break;
       }
+
+      if (!ok) continue;
+
+      const bornAt = state.gameTimeMs;
+      state.specials.push({
+        kind,
+        x,
+        y,
+        size,
+        bornAt,
+        expiresAt: bornAt + def.ttlMs,
+      });
+      return true;
     }
+
     return false;
   }
 
@@ -534,7 +589,9 @@
       const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
       if (!visible) continue;
 
-      drawCell(s.x, s.y, def.color, true);
+      for (const c of specialCells(s)) {
+        drawCell(c.x, c.y, def.color, true);
+      }
     }
 
     // snake
