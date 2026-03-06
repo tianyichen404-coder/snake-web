@@ -1,9 +1,12 @@
 (() => {
   /**
-   * Snake (grid-based)
-   * - Deterministic tick loop
-   * - Input queue prevents instant reverse
-   * - Timed foods with blink-before-expire
+   * Snake (continuous, camera-follow)
+   * - World is bounded 30x30 units
+   * - Camera centers on snake head
+   * - 360° turning (keyboard or mouse selectable)
+   * - Self collision does NOT end game (segments can overlap)
+   * - Sprint: hold Space, 1.5x speed, uses energy (recharge 10s, consume 2x), max 5s per burst
+   * - Foods are sprite-based (apple/mango/rock)
    */
 
   const canvas = document.getElementById('game');
@@ -14,27 +17,26 @@
   const speedEl = document.getElementById('speed');
   const statusEl = document.getElementById('status');
   const difficultyEl = document.getElementById('difficulty');
+  const controlModeEl = document.getElementById('controlMode');
+  const energyFillEl = document.getElementById('energyFill');
+  const energyTextEl = document.getElementById('energyText');
 
   const btnStart = document.getElementById('btnStart');
   const btnPause = document.getElementById('btnPause');
   const btnStep = document.getElementById('btnStep');
 
-  // Grid settings (more cells)
-  const GRID = 30; // 30x30
-  const CELL = Math.floor(canvas.width / GRID);
-  const PAD = Math.floor((canvas.width - CELL * GRID) / 2);
+  // World settings
+  const WORLD = 30; // 30x30 units (bounded)
 
   const COLORS = {
     bg: '#05070a',
     grid: 'rgba(255,255,255,0.04)',
-    snake: '#47d16c',
-    snakeHead: '#77f2a0',
-    red: '#ff4d4d',
+    border: 'rgba(230,237,243,0.16)',
     text: 'rgba(230,237,243,0.85)',
     shadow: 'rgba(0,0,0,0.35)',
   };
 
-  // Snake sprites (cartoon-flat, 32x32). If images are missing/not loaded, we fallback to the old block style.
+  // Sprites
   const SPRITES = {
     head: new Image(),
     body: new Image(),
@@ -46,74 +48,60 @@
   SPRITES.tail.src = 'assets/tail.png';
   SPRITES.turn.src = 'assets/turn.png';
 
+  const FOOD_KIND = {
+    APPLE: 'apple',
+    MANGO: 'mango',
+    ROCK: 'rock',
+  };
+
+  const FOOD_SPRITES = {
+    [FOOD_KIND.APPLE]: new Image(),
+    [FOOD_KIND.MANGO]: new Image(),
+    [FOOD_KIND.ROCK]: new Image(),
+  };
+  FOOD_SPRITES[FOOD_KIND.APPLE].src = 'assets/apple.png';
+  FOOD_SPRITES[FOOD_KIND.MANGO].src = 'assets/mango.png';
+  FOOD_SPRITES[FOOD_KIND.ROCK].src = 'assets/rock.png';
 
   const LS_BEST = 'snake_web_best_v1';
   const LS_DIFFICULTY = 'snake_web_difficulty_v1';
+  const LS_CONTROL = 'snake_web_control_v1';
 
-  // Food classification (for easier future expansion)
-  const FOOD_CATEGORY = {
-    BUFF: 'buff',
-    DEBUFF: 'debuff',
-    NORMAL: 'normal',
+  // Difficulty presets
+  const DIFFICULTY = {
+    newbie: { label: '新手', baseSpeed: 4.2, turnSpeed: 3.4 },
+    easy: { label: '简单', baseSpeed: 5.0, turnSpeed: 3.8 },
+    hard: { label: '困难', baseSpeed: 6.2, turnSpeed: 4.4 },
+    insane: { label: '极难', baseSpeed: 7.2, turnSpeed: 5.0 },
   };
 
-  const FOOD_KIND = {
-    RED: 'red',
-    YELLOW: 'yellow',
-    GRAY: 'gray',
-  };
-
-  // Food sprites
-  const FOOD_SPRITES = {
-    [FOOD_KIND.RED]: new Image(), // apple
-    [FOOD_KIND.YELLOW]: new Image(), // mango
-    [FOOD_KIND.GRAY]: new Image(), // rock
-  };
-  FOOD_SPRITES[FOOD_KIND.RED].src = 'assets/apple.png';
-  FOOD_SPRITES[FOOD_KIND.YELLOW].src = 'assets/mango.png';
-  FOOD_SPRITES[FOOD_KIND.GRAY].src = 'assets/rock.png';
-
-  // Global TTL rule: all foods expire and blink before disappearing.
+  // Food rules
   const FOOD_TTL_MS = 10000;
   const FOOD_BLINK_MS = 3000;
 
-  /** @type {Record<string, {category:'normal'|'buff'|'debuff', color:string}>} */
-  const FOOD_DEFS = {
-    [FOOD_KIND.RED]: { category: FOOD_CATEGORY.NORMAL, color: COLORS.red },
-    [FOOD_KIND.YELLOW]: { category: FOOD_CATEGORY.BUFF, color: '#ffd166' },
-    [FOOD_KIND.GRAY]: { category: FOOD_CATEGORY.DEBUFF, color: '#9aa4b2' },
-  };
+  // Sprint rules
+  const SPRINT_MULT = 1.5;
+  const SPRINT_MAX_BURST_S = 5;
+  const ENERGY_RECHARGE_S = 10; // full in 10s
+  const ENERGY_CONSUME_MULT = 2; // consume rate is 2x recharge
 
-  // Difficulty presets (tick interval in ms). Current game speed corresponds to "easy".
-  // Larger ms = slower.
-  const DIFFICULTY = {
-    newbie: { label: '新手', baseTickMs: 150 },
-    easy: { label: '简单', baseTickMs: 110 },
-    hard: { label: '困难', baseTickMs: 85 },
-    insane: { label: '极难', baseTickMs: 65 },
-  };
-
-  const DIR = {
-    Up: { x: 0, y: -1 },
-    Down: { x: 0, y: 1 },
-    Left: { x: -1, y: 0 },
-    Right: { x: 1, y: 0 },
-  };
-
-  function isOpposite(a, b) {
-    return a && b && a.x === -b.x && a.y === -b.y;
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
   }
 
-  function clampInt(n, min, max) {
-    return Math.max(min, Math.min(max, n | 0));
+  function wrapAngle(a) {
+    const twoPi = Math.PI * 2;
+    a = a % twoPi;
+    if (a < 0) a += twoPi;
+    return a;
   }
 
-  function randInt(min, max) {
-    return (Math.random() * (max - min + 1) + min) | 0;
-  }
-
-  function keyOf(p) {
-    return `${p.x},${p.y}`;
+  function angleDelta(from, to) {
+    // shortest signed delta
+    let d = wrapAngle(to) - wrapAngle(from);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return d;
   }
 
   function setStatus(label, kind = 'normal') {
@@ -129,53 +117,9 @@
     statusEl.innerHTML = `状态：<strong>${label}</strong>`;
   }
 
-  const state = {
-    running: false,
-    paused: false,
-    gameOver: false,
-
-    score: 0,
-    best: 0,
-
-    difficulty: 'easy',
-
-    // timing
-    baseTickMs: 110,
-    tickMs: 110,
-    minTickMs: 55,
-    accMs: 0,
-    lastTs: 0,
-    gameTimeMs: 0,
-
-    // snake
-    snake: [], // head is [0]
-    dir: DIR.Right,
-    nextDirQueue: [],
-
-    // foods on board
-    foods: /** @type {Array<{id:string, kind:'red'|'yellow'|'gray', x:number, y:number, size:number, bornAt:number, expiresAt:number}>} */ ([]),
-
-    // effects
-    yellowBuffUntil: 0,
-
-    // spawn schedule per kind
-    nextSpawnAt: {
-      red: 0,
-      yellow: 0,
-      gray: 0,
-    },
-
-    // spawn caps to prevent the board from becoming unplayable
-    maxOnBoard: {
-      red: 3,
-      yellow: 1,
-      gray: 8, // actual target changes by difficulty
-    },
-  };
-
   function loadBest() {
     const v = Number(localStorage.getItem(LS_BEST) || '0');
-    state.best = Number.isFinite(v) ? clampInt(v, 0, 999999) : 0;
+    state.best = Number.isFinite(v) ? clamp(v | 0, 0, 999999) : 0;
     bestEl.textContent = String(state.best);
   }
 
@@ -194,218 +138,429 @@
     localStorage.setItem(LS_DIFFICULTY, state.difficulty);
   }
 
+  function loadControlMode() {
+    const key = String(localStorage.getItem(LS_CONTROL) || 'keyboard');
+    const resolved = key === 'mouse' ? 'mouse' : 'keyboard';
+    controlModeEl.value = resolved;
+    state.controlMode = resolved;
+  }
+
+  function saveControlMode() {
+    localStorage.setItem(LS_CONTROL, state.controlMode);
+  }
+
   function updateSpeedUI() {
-    const mul = state.baseTickMs / state.tickMs;
-    speedEl.textContent = `${mul.toFixed(2)}x`;
+    // show effective multiplier vs base
+    const mult = state.sprinting ? SPRINT_MULT : 1;
+    speedEl.textContent = `${mult.toFixed(2)}x`;
   }
 
   function applyDifficulty(key) {
     const preset = DIFFICULTY[key] || DIFFICULTY.easy;
     state.difficulty = key in DIFFICULTY ? key : 'easy';
-    state.baseTickMs = preset.baseTickMs;
-    state.minTickMs = Math.max(35, Math.round(state.baseTickMs * 0.5));
+    state.baseSpeed = preset.baseSpeed;
+    state.turnSpeed = preset.turnSpeed;
     updateSpeedUI();
+  }
 
-    // difficulty impacts gray footprint and gray density cap
-    state.maxOnBoard.gray = grayTargetCount() * 2; // allow more to exist since they are timed
+  function setEnergyUI() {
+    const pct = Math.round(state.energy * 100);
+    energyFillEl.style.width = `${pct}%`;
+    energyTextEl.textContent = `${pct}%`;
+  }
 
-    // also refresh sizes of existing gray foods
+  function resizeCanvasForDPR() {
+    // CSS size is controlled by layout; use bounding box to set backing store
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+
+    state.dpr = dpr;
+    state.cssW = w;
+    state.cssH = h;
+
+    const bw = Math.round(w * dpr);
+    const bh = Math.round(h * dpr);
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;
+      canvas.height = bh;
+    }
+
+    // use CSS pixels for drawing, but with dpr scale
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+  }
+
+  function worldToScreen(p) {
+    // camera centers on head
+    const scale = state.scale;
+    const cx = state.cssW / 2;
+    const cy = state.cssH / 2;
+    const hx = state.head.x;
+    const hy = state.head.y;
+
+    return {
+      x: cx + (p.x - hx) * scale,
+      y: cy + (p.y - hy) * scale,
+    };
+  }
+
+  function drawSpriteWorld(pos, img, rotRad, sizeWorld) {
+    const s = worldToScreen(pos);
+    const px = s.x;
+    const py = s.y;
+    const sizePx = sizeWorld * state.scale;
+
+    if (!img || !img.complete || !img.naturalWidth) {
+      // fallback circle
+      ctx.fillStyle = 'rgba(71,209,108,0.85)';
+      ctx.beginPath();
+      ctx.arc(px, py, sizePx * 0.45, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(rotRad);
+    ctx.drawImage(img, -sizePx / 2, -sizePx / 2, sizePx, sizePx);
+    ctx.restore();
+  }
+
+  function drawOverlay(title, subtitle) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, state.cssW, state.cssH);
+
+    ctx.fillStyle = COLORS.text;
+    ctx.textAlign = 'center';
+
+    ctx.font = '700 34px ui-sans-serif, system-ui, -apple-system, Segoe UI';
+    ctx.fillText(title, state.cssW / 2, state.cssH / 2 - 10);
+
+    ctx.font = '500 16px ui-sans-serif, system-ui, -apple-system, Segoe UI';
+    ctx.fillStyle = 'rgba(230,237,243,0.75)';
+    ctx.fillText(subtitle, state.cssW / 2, state.cssH / 2 + 20);
+  }
+
+  function drawBackground() {
+    ctx.fillStyle = COLORS.bg;
+    ctx.fillRect(0, 0, state.cssW, state.cssH);
+
+    // border box (world bounds)
+    const tl = worldToScreen({ x: 0, y: 0 });
+    const br = worldToScreen({ x: WORLD, y: WORLD });
+    const x = tl.x;
+    const y = tl.y;
+    const w = br.x - tl.x;
+    const h = br.y - tl.y;
+
+    ctx.strokeStyle = COLORS.border;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, w, h);
+
+    // optional grid for orientation
+    if (!state.showGrid) return;
+
+    ctx.strokeStyle = COLORS.grid;
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= WORLD; i++) {
+      const a = worldToScreen({ x: i, y: 0 });
+      const b = worldToScreen({ x: i, y: WORLD });
+      ctx.beginPath();
+      ctx.moveTo(a.x + 0.5, a.y + 0.5);
+      ctx.lineTo(b.x + 0.5, b.y + 0.5);
+      ctx.stroke();
+
+      const c = worldToScreen({ x: 0, y: i });
+      const d = worldToScreen({ x: WORLD, y: i });
+      ctx.beginPath();
+      ctx.moveTo(c.x + 0.5, c.y + 0.5);
+      ctx.lineTo(d.x + 0.5, d.y + 0.5);
+      ctx.stroke();
+    }
+  }
+
+  function drawFoods() {
     for (const f of state.foods) {
-      if (f.kind === FOOD_KIND.GRAY) {
-        f.size = foodSizeForKind(f.kind);
-        f.x = clampInt(f.x, 0, GRID - f.size);
-        f.y = clampInt(f.y, 0, GRID - f.size);
+      const remaining = f.expiresAt - state.gameTimeMs;
+      const blinking = remaining <= FOOD_BLINK_MS;
+      const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
+      if (!visible) continue;
+
+      const img = FOOD_SPRITES[f.kind];
+      drawSpriteWorld({ x: f.x, y: f.y }, img, 0, 1);
+    }
+  }
+
+  function sampleBodySprites() {
+    // draw from tail to head so the front segments cover older segments
+    const pts = state.body;
+    if (pts.length < 2) return;
+
+    // tail
+    const tail = pts[pts.length - 1];
+    const beforeTail = pts[pts.length - 2];
+    const tailAng = Math.atan2(tail.y - beforeTail.y, tail.x - beforeTail.x);
+    drawSpriteWorld(tail, SPRITES.tail, tailAng, 1);
+
+    // body samples (skip head and tail)
+    // place a sprite every ~0.6 units along the polyline
+    const step = 0.6;
+    let carry = 0;
+
+    for (let i = pts.length - 2; i > 0; i--) {
+      const a = pts[i];
+      const b = pts[i - 1];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const segLen = Math.hypot(dx, dy);
+      if (segLen <= 1e-6) continue;
+
+      const ang = Math.atan2(dy, dx);
+      let t = carry;
+      while (t < segLen) {
+        const u = t / segLen;
+        const p = { x: a.x + dx * u, y: a.y + dy * u };
+        // use body sprite; turns are not strictly needed because we sample along the curve
+        drawSpriteWorld(p, SPRITES.body, ang, 1);
+        t += step;
       }
-      if (f.kind === FOOD_KIND.RED) {
-        f.size = redFoodSize();
-        f.x = clampInt(f.x, 0, GRID - f.size);
-        f.y = clampInt(f.y, 0, GRID - f.size);
-      }
+      carry = t - segLen;
+    }
+
+    // head
+    drawSpriteWorld(state.head, SPRITES.head, state.angle, 1);
+  }
+
+  function draw(showOverlay = false) {
+    resizeCanvasForDPR();
+
+    // scale: fit world bounds in view, but keep a bit zoomed in so sprites are visible.
+    // We'll set 1 world unit ~ (min(cssW, cssH) / 18) px.
+    const base = Math.min(state.cssW, state.cssH);
+    state.scale = Math.max(10, base / 18);
+
+    drawBackground();
+    drawFoods();
+    sampleBodySprites();
+
+    if (!state.running) {
+      drawOverlay('按 Enter 开始', '选择控制方式后开始');
+    } else if (state.paused && !state.gameOver) {
+      drawOverlay('已暂停', 'Space 继续 / 单步按钮');
+    } else if (showOverlay && state.gameOver) {
+      drawOverlay('游戏结束', `得分 ${state.score}（Enter 重开）`);
     }
   }
 
-  function grayTargetCount() {
-    switch (state.difficulty) {
-      case 'newbie':
-        return 1;
-      case 'easy':
-        return 2;
-      case 'hard':
-        return 3;
-      case 'insane':
-        return 4;
-      default:
-        return 2;
-    }
-  }
-
-  function redFoodSize() {
-    // Easy mode: red food base is 2x2. Others: 1x1.
-    const baseSize = state.difficulty === 'easy' ? 2 : 1;
-
-    // Yellow buff changes red-food behavior
-    const active = state.yellowBuffUntil > state.gameTimeMs;
-    if (!active) return baseSize;
-
-    // On non-easy modes, buff makes red food 2x2.
-    if (state.difficulty !== 'easy') return 2;
-
-    // On easy mode, it stays 2x2.
-    return baseSize;
-  }
-
-  function redFoodValue() {
-    const active = state.yellowBuffUntil > state.gameTimeMs;
-    if (!active) return 10;
-    // Easy mode buff: 20 points
-    if (state.difficulty === 'easy') return 20;
-    // Other modes buff: 15 points
-    return 15;
-  }
-
-  function foodSizeForKind(kind) {
-    if (kind === FOOD_KIND.RED) return redFoodSize();
-    if (kind === FOOD_KIND.GRAY) {
-      if (state.difficulty === 'hard') return 2;
-      if (state.difficulty === 'insane') return 3;
-      return 1;
-    }
-    return 1;
-  }
-
-  function foodPenaltyForKind(kind) {
-    if (kind !== FOOD_KIND.GRAY) return 0;
-    return state.difficulty === 'easy' ? 10 : 20;
-  }
-
-  function foodCells(f) {
-    const size = f.size || 1;
-    const cells = [];
-    for (let dy = 0; dy < size; dy++) {
-      for (let dx = 0; dx < size; dx++) {
-        cells.push({ x: f.x + dx, y: f.y + dy });
-      }
-    }
-    return cells;
-  }
-
-  function isOccupied(x, y) {
-    for (const p of state.snake) {
-      if (p.x === x && p.y === y) return true;
-    }
-    for (const f of state.foods) {
-      for (const c of foodCells(f)) {
-        if (c.x === x && c.y === y) return true;
-      }
-    }
-    return false;
+  function rand(min, max) {
+    return Math.random() * (max - min) + min;
   }
 
   function spawnFood(kind) {
-    const def = FOOD_DEFS[kind];
-    if (!def) return false;
-
-    const size = foodSizeForKind(kind);
-    const maxX = GRID - size;
-    const maxY = GRID - size;
-
-    // cap
-    const count = state.foods.filter((f) => f.kind === kind).length;
-    const cap = state.maxOnBoard[kind] ?? 999;
-    if (count >= cap) return false;
-
-    let tries = 0;
-    while (tries++ < 5000) {
-      const x = randInt(0, maxX);
-      const y = randInt(0, maxY);
-
-      // footprint must be empty
-      let ok = true;
-      for (let dy = 0; dy < size; dy++) {
-        for (let dx = 0; dx < size; dx++) {
-          if (isOccupied(x + dx, y + dy)) {
-            ok = false;
-            break;
-          }
-        }
-        if (!ok) break;
-      }
-      if (!ok) continue;
-
-      const bornAt = state.gameTimeMs;
-      const id = `${kind}:${bornAt}:${Math.random().toString(16).slice(2)}`;
+    // ensure not too close to head
+    for (let tries = 0; tries < 2000; tries++) {
+      const x = rand(1, WORLD - 1);
+      const y = rand(1, WORLD - 1);
+      const dx = x - state.head.x;
+      const dy = y - state.head.y;
+      if (dx * dx + dy * dy < 6) continue;
 
       state.foods.push({
-        id,
+        id: `${kind}:${state.gameTimeMs}:${Math.random().toString(16).slice(2)}`,
         kind,
         x,
         y,
-        size,
-        bornAt,
-        expiresAt: bornAt + FOOD_TTL_MS,
+        bornAt: state.gameTimeMs,
+        expiresAt: state.gameTimeMs + FOOD_TTL_MS,
       });
-
       return true;
     }
-
     return false;
   }
 
-  function scheduleNextSpawn(kind, minMs, maxMs) {
-    state.nextSpawnAt[kind] = state.gameTimeMs + randInt(minMs, maxMs);
+  function updateFoods(dtMs) {
+    // expire
+    for (let i = state.foods.length - 1; i >= 0; i--) {
+      if (state.foods[i].expiresAt <= state.gameTimeMs) state.foods.splice(i, 1);
+    }
+
+    // spawn cadence: keep a few on board
+    const counts = {
+      [FOOD_KIND.APPLE]: 0,
+      [FOOD_KIND.MANGO]: 0,
+      [FOOD_KIND.ROCK]: 0,
+    };
+    for (const f of state.foods) counts[f.kind]++;
+
+    const caps = state.foodCaps;
+    for (const k of Object.keys(counts)) {
+      while (counts[k] < caps[k]) {
+        if (!spawnFood(k)) break;
+        counts[k]++;
+      }
+    }
+
+    // eat check
+    const eatRadius = 0.65; // in world units
+    for (let i = state.foods.length - 1; i >= 0; i--) {
+      const f = state.foods[i];
+      const dx = f.x - state.head.x;
+      const dy = f.y - state.head.y;
+      if (dx * dx + dy * dy > eatRadius * eatRadius) continue;
+
+      // apply effects
+      if (f.kind === FOOD_KIND.APPLE) {
+        state.score += 10;
+        state.length += 0.9; // increase length in world units
+        // subtle speed ramp
+        state.baseSpeed = Math.min(state.baseSpeed * 1.01, state.baseSpeedMax);
+      } else if (f.kind === FOOD_KIND.MANGO) {
+        state.score += 5;
+        state.length += 0.5;
+        state.mangoBuffUntil = state.gameTimeMs + 10000;
+      } else if (f.kind === FOOD_KIND.ROCK) {
+        state.score = Math.max(0, state.score - 10);
+        state.length = Math.max(3.5, state.length - 0.8);
+      }
+
+      state.foods.splice(i, 1);
+
+      scoreEl.textContent = String(state.score);
+      if (state.score > state.best) {
+        state.best = state.score;
+        bestEl.textContent = String(state.best);
+        saveBest();
+      }
+    }
   }
 
-  function updateFoods() {
-    // expire foods
-    for (let i = state.foods.length - 1; i >= 0; i--) {
-      if (state.foods[i].expiresAt <= state.gameTimeMs) {
-        state.foods.splice(i, 1);
+  function updateEnergy(dtS) {
+    const rechargeRate = 1 / ENERGY_RECHARGE_S;
+    const consumeRate = rechargeRate * ENERGY_CONSUME_MULT;
+
+    const wantSprint = state.sprintKeyDown && !state.paused && state.running && !state.gameOver;
+
+    // reset burst timer when sprint key is released
+    if (!wantSprint) {
+      state.sprintBurstS = 0;
+      state.sprinting = false;
+      state.energy = clamp(state.energy + rechargeRate * dtS, 0, 1);
+      setEnergyUI();
+      return;
+    }
+
+    // try sprint
+    const canSprint = state.energy > 0.0001 && state.sprintBurstS < SPRINT_MAX_BURST_S;
+    if (canSprint) {
+      state.sprinting = true;
+      state.energy = clamp(state.energy - consumeRate * dtS, 0, 1);
+      state.sprintBurstS += dtS;
+    } else {
+      state.sprinting = false;
+      // still recharge a bit if you hold space with no energy or burst limit reached
+      state.energy = clamp(state.energy + rechargeRate * dtS * 0.25, 0, 1);
+    }
+
+    setEnergyUI();
+  }
+
+  function updateControl(dtS) {
+    if (state.controlMode === 'keyboard') {
+      // A/D: turn, W: forward
+      const turn = (state.keyRight ? 1 : 0) - (state.keyLeft ? 1 : 0);
+      state.angle = wrapAngle(state.angle + turn * state.turnSpeed * dtS);
+
+      const forward = state.keyForward ? 1 : 0;
+      state.throttle = forward;
+    } else {
+      // mouse: always forward, angle follows mouse
+      state.throttle = 1;
+
+      const dx = state.mouseWorld.x - state.head.x;
+      const dy = state.mouseWorld.y - state.head.y;
+      if (dx * dx + dy * dy > 1e-6) {
+        const target = Math.atan2(dy, dx);
+        const d = angleDelta(state.angle, target);
+        const maxTurn = state.turnSpeed * dtS;
+        state.angle = wrapAngle(state.angle + clamp(d, -maxTurn, maxTurn));
       }
     }
+  }
 
-    // Yellow buff expiry affects size/value of red foods
-    // Update existing red foods footprint to match current rules.
-    for (const f of state.foods) {
-      if (f.kind === FOOD_KIND.RED) {
-        const newSize = redFoodSize();
-        if (f.size !== newSize) {
-          f.size = newSize;
-          f.x = clampInt(f.x, 0, GRID - f.size);
-          f.y = clampInt(f.y, 0, GRID - f.size);
-        }
+  function pushHeadPoint() {
+    const last = state.body[0];
+    if (!last) {
+      state.body.unshift({ x: state.head.x, y: state.head.y });
+      return;
+    }
+    const dx = state.head.x - last.x;
+    const dy = state.head.y - last.y;
+    const d = Math.hypot(dx, dy);
+    if (d >= 0.18) {
+      state.body.unshift({ x: state.head.x, y: state.head.y });
+      // cap points to keep memory bounded
+      if (state.body.length > 3000) state.body.length = 3000;
+    }
+  }
+
+  function trimBodyToLength() {
+    // Keep polyline length to state.length
+    let total = 0;
+    const pts = state.body;
+    if (pts.length < 2) return;
+
+    // compute from head(pts[0]) towards tail
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const seg = Math.hypot(b.x - a.x, b.y - a.y);
+      if (total + seg >= state.length) {
+        // cut within this segment
+        const need = state.length - total;
+        const t = seg > 1e-6 ? need / seg : 0;
+        const nx = a.x + (b.x - a.x) * t;
+        const ny = a.y + (b.y - a.y) * t;
+        pts.length = i + 2;
+        pts[i + 1] = { x: nx, y: ny };
+        return;
       }
+      total += seg;
     }
+  }
 
-    // Spawn logic: foods can spawn again 1-10 seconds after the previous spawn,
-    // even if older ones are still on the board (they will blink+expire by themselves).
+  function tick(dtMs) {
+    if (!state.running || state.paused || state.gameOver) return;
 
-    // Red: ensure at least one exists when running
-    if (!state.foods.some((f) => f.kind === FOOD_KIND.RED)) {
-      spawnFood(FOOD_KIND.RED);
-      scheduleNextSpawn('red', 1000, 10000);
-    }
+    const dtS = dtMs / 1000;
 
-    // Red spawn cadence
-    if (state.gameTimeMs >= state.nextSpawnAt.red) {
-      spawnFood(FOOD_KIND.RED);
-      scheduleNextSpawn('red', 1000, 10000);
-    }
+    updateEnergy(dtS);
+    updateControl(dtS);
 
-    // Yellow: at most 1 on board
-    if (state.gameTimeMs >= state.nextSpawnAt.yellow) {
-      if (!state.foods.some((f) => f.kind === FOOD_KIND.YELLOW)) {
-        spawnFood(FOOD_KIND.YELLOW);
-      }
-      scheduleNextSpawn('yellow', 1000, 10000);
-    }
+    const mangoActive = state.mangoBuffUntil > state.gameTimeMs;
+    const speedBonus = mangoActive ? 1.08 : 1;
 
-    // Gray: more frequent on harder difficulties
-    if (state.gameTimeMs >= state.nextSpawnAt.gray) {
-      spawnFood(FOOD_KIND.GRAY);
-      const baseMin = state.difficulty === 'insane' ? 900 : state.difficulty === 'hard' ? 1200 : 1800;
-      const baseMax = state.difficulty === 'insane' ? 3000 : state.difficulty === 'hard' ? 3600 : 4500;
-      scheduleNextSpawn('gray', baseMin, baseMax);
-    }
+    const base = state.baseSpeed * speedBonus;
+    const effSpeed = base * (state.sprinting ? SPRINT_MULT : 1);
+
+    const v = effSpeed * state.throttle;
+
+    state.head.x += Math.cos(state.angle) * v * dtS;
+    state.head.y += Math.sin(state.angle) * v * dtS;
+
+    // world bounds (hard boundary)
+    if (state.head.x < 0.5) state.head.x = 0.5;
+    if (state.head.y < 0.5) state.head.y = 0.5;
+    if (state.head.x > WORLD - 0.5) state.head.x = WORLD - 0.5;
+    if (state.head.y > WORLD - 0.5) state.head.y = WORLD - 0.5;
+
+    pushHeadPoint();
+    trimBodyToLength();
+
+    updateFoods(dtMs);
+
+    updateSpeedUI();
   }
 
   function resetGame() {
@@ -418,327 +573,45 @@
 
     applyDifficulty(state.difficulty);
 
-    state.tickMs = state.baseTickMs;
-    state.accMs = 0;
-    state.lastTs = performance.now();
     state.gameTimeMs = 0;
+    state.lastTs = performance.now();
 
-    state.foods = [];
-    state.yellowBuffUntil = 0;
+    state.energy = 1;
+    state.sprintBurstS = 0;
+    state.sprinting = false;
+    setEnergyUI();
 
-    // Start snake centered, length 4
-    const cx = (GRID / 2) | 0;
-    const cy = (GRID / 2) | 0;
+    state.head = { x: WORLD / 2, y: WORLD / 2 };
+    state.angle = 0;
+    state.throttle = 1;
 
-    state.snake = [
-      { x: cx + 1, y: cy },
-      { x: cx, y: cy },
-      { x: cx - 1, y: cy },
-      { x: cx - 2, y: cy },
+    // body polyline: head at index 0
+    state.length = 6.5;
+    state.body = [
+      { x: state.head.x, y: state.head.y },
+      { x: state.head.x - 1, y: state.head.y },
+      { x: state.head.x - 2, y: state.head.y },
+      { x: state.head.x - 3, y: state.head.y },
+      { x: state.head.x - 4, y: state.head.y },
+      { x: state.head.x - 5, y: state.head.y },
+      { x: state.head.x - 6, y: state.head.y },
     ];
 
-    state.dir = DIR.Right;
-    state.nextDirQueue = [];
+    state.foods = [];
+    state.mangoBuffUntil = 0;
 
-    // initial spawns
-    spawnFood(FOOD_KIND.RED);
-    scheduleNextSpawn('red', 1000, 10000);
-    scheduleNextSpawn('yellow', 6000, 12000);
-    scheduleNextSpawn('gray', 2500, 4500);
+    // spawn caps vary by difficulty
+    state.foodCaps = {
+      [FOOD_KIND.APPLE]: state.difficulty === 'insane' ? 2 : 3,
+      [FOOD_KIND.MANGO]: 1,
+      [FOOD_KIND.ROCK]: state.difficulty === 'newbie' ? 2 : state.difficulty === 'easy' ? 4 : state.difficulty === 'hard' ? 6 : 8,
+    };
 
-    updateSpeedUI();
+    // speed ceiling for ramping
+    state.baseSpeedMax = DIFFICULTY.insane.baseSpeed * 1.25;
+
     setStatus('进行中');
     draw();
-  }
-
-  function enqueueDir(d) {
-    if (!state.running || state.gameOver) return;
-
-    const lastQueued = state.nextDirQueue.length
-      ? state.nextDirQueue[state.nextDirQueue.length - 1]
-      : null;
-    const current = lastQueued || state.dir;
-
-    if (isOpposite(current, d)) return;
-    if (current.x === d.x && current.y === d.y) return;
-
-    if (state.nextDirQueue.length < 2) state.nextDirQueue.push(d);
-  }
-
-  function applyQueuedDir() {
-    if (!state.nextDirQueue.length) return;
-    const d = state.nextDirQueue.shift();
-    if (!isOpposite(state.dir, d)) state.dir = d;
-  }
-
-  function endGame() {
-    state.gameOver = true;
-    setStatus('游戏结束（Enter 重开）', 'over');
-    draw(true);
-  }
-
-  function tryEatAt(nx, ny) {
-    /** @type {Array<'red'|'yellow'|'gray'>} */
-    const eatenKinds = [];
-
-    for (let i = state.foods.length - 1; i >= 0; i--) {
-      const f = state.foods[i];
-      const hit = foodCells(f).some((c) => c.x === nx && c.y === ny);
-      if (!hit) continue;
-
-      eatenKinds.push(f.kind);
-      state.foods.splice(i, 1);
-    }
-
-    return eatenKinds;
-  }
-
-  function applyEatenEffects(kinds) {
-    let ateRed = false;
-
-    for (const kind of kinds) {
-      if (kind === FOOD_KIND.RED) {
-        ateRed = true;
-        const val = redFoodValue();
-        state.score += val;
-        scoreEl.textContent = String(state.score);
-
-        if (state.score > state.best) {
-          state.best = state.score;
-          bestEl.textContent = String(state.best);
-          saveBest();
-        }
-
-        // speed up
-        state.tickMs = Math.max(state.minTickMs, Math.round(state.tickMs * 0.97));
-        updateSpeedUI();
-      } else if (kind === FOOD_KIND.YELLOW) {
-        const durMs = state.difficulty === 'easy' ? 15000 : 10000;
-        state.yellowBuffUntil = state.gameTimeMs + durMs;
-      } else if (kind === FOOD_KIND.GRAY) {
-        const penalty = foodPenaltyForKind(kind);
-        state.score = Math.max(0, state.score - penalty);
-        scoreEl.textContent = String(state.score);
-      }
-    }
-
-    return { ateRed };
-  }
-
-  function tick() {
-    if (!state.running || state.paused || state.gameOver) return;
-
-    applyQueuedDir();
-
-    const head = state.snake[0];
-    const nx = head.x + state.dir.x;
-    const ny = head.y + state.dir.y;
-
-    if (nx < 0 || nx >= GRID || ny < 0 || ny >= GRID) {
-      endGame();
-      return;
-    }
-
-    const newHead = { x: nx, y: ny };
-
-    // Find what we will eat on this cell
-    const eatenKinds = tryEatAt(nx, ny);
-    const willGrow = eatenKinds.includes(FOOD_KIND.RED);
-
-    // Self collision (tail moves unless we grow)
-    const bodyToCheck = willGrow ? state.snake : state.snake.slice(0, -1);
-    for (const p of bodyToCheck) {
-      if (p.x === newHead.x && p.y === newHead.y) {
-        endGame();
-        return;
-      }
-    }
-
-    // Move
-    state.snake.unshift(newHead);
-
-    // Apply effects
-    applyEatenEffects(eatenKinds);
-
-    if (!willGrow) {
-      state.snake.pop();
-    }
-
-    draw();
-  }
-
-  function roundRectFill(x, y, w, h, r) {
-    const rr = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + rr, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rr);
-    ctx.arcTo(x + w, y + h, x, y + h, rr);
-    ctx.arcTo(x, y + h, x, y, rr);
-    ctx.arcTo(x, y, x + w, y, rr);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  function drawCell(gx, gy, color, isFood) {
-    const x = PAD + gx * CELL;
-    const y = PAD + gy * CELL;
-    const r = isFood ? 9 : 6;
-
-    ctx.fillStyle = COLORS.shadow;
-    roundRectFill(x + 2, y + 3, CELL - 4, CELL - 4, r);
-
-    ctx.fillStyle = color;
-    roundRectFill(x + 1, y + 1, CELL - 4, CELL - 4, r);
-  }
-
-  function dirToRotDeg(d) {
-    if (d.x === 1 && d.y === 0) return 0;
-    if (d.x === 0 && d.y === 1) return 90;
-    if (d.x === -1 && d.y === 0) return 180;
-    if (d.x === 0 && d.y === -1) return 270;
-    return 0;
-  }
-
-  function normDir(from, to) {
-    const dx = Math.sign(to.x - from.x);
-    const dy = Math.sign(to.y - from.y);
-    return { x: dx, y: dy };
-  }
-
-  function drawSpriteCell(gx, gy, img, rotDeg, fallbackColor) {
-    const x = PAD + gx * CELL;
-    const y = PAD + gy * CELL;
-
-    if (!img || !img.complete || !img.naturalWidth) {
-      drawCell(gx, gy, fallbackColor || COLORS.snake, false);
-      return;
-    }
-
-    const cx = x + CELL / 2;
-    const cy = y + CELL / 2;
-
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate((rotDeg * Math.PI) / 180);
-    ctx.drawImage(img, -CELL / 2, -CELL / 2, CELL, CELL);
-    ctx.restore();
-  }
-
-  function drawOverlay(title, subtitle) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    ctx.fillStyle = COLORS.text;
-    ctx.textAlign = 'center';
-
-    ctx.font = '700 34px ui-sans-serif, system-ui, -apple-system, Segoe UI';
-    ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 10);
-
-    ctx.font = '500 16px ui-sans-serif, system-ui, -apple-system, Segoe UI';
-    ctx.fillStyle = 'rgba(230,237,243,0.75)';
-    ctx.fillText(subtitle, canvas.width / 2, canvas.height / 2 + 20);
-  }
-
-  function draw(showOverlay = false) {
-    ctx.fillStyle = COLORS.bg;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // grid
-    ctx.strokeStyle = COLORS.grid;
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= GRID; i++) {
-      const x = PAD + i * CELL + 0.5;
-      const y = PAD + i * CELL + 0.5;
-      ctx.beginPath();
-      ctx.moveTo(PAD + 0.5, y);
-      ctx.lineTo(PAD + GRID * CELL + 0.5, y);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(x, PAD + 0.5);
-      ctx.lineTo(x, PAD + GRID * CELL + 0.5, y);
-      ctx.stroke();
-    }
-
-    // foods (blink in last 3s)
-    for (const f of state.foods) {
-      const def = FOOD_DEFS[f.kind];
-      if (!def) continue;
-
-      const remaining = f.expiresAt - state.gameTimeMs;
-      const blinking = remaining <= FOOD_BLINK_MS;
-      const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
-      if (!visible) continue;
-
-      const sprite = FOOD_SPRITES[f.kind];
-      for (const c of foodCells(f)) {
-        // Foods don't need rotation; fallback to old colored blocks if sprite missing
-        if (sprite && sprite.complete && sprite.naturalWidth) {
-          drawSpriteCell(c.x, c.y, sprite, 0, def.color);
-        } else {
-          drawCell(c.x, c.y, def.color, true);
-        }
-      }
-    }
-
-    // snake (sprite-based)
-    const s = state.snake;
-    for (let i = s.length - 1; i >= 0; i--) {
-      const p = s[i];
-
-      // Head: use current moving direction
-      if (i === 0) {
-        drawSpriteCell(p.x, p.y, SPRITES.head, dirToRotDeg(state.dir), COLORS.snakeHead);
-        continue;
-      }
-
-      // Tail: point away from the previous segment
-      if (i === s.length - 1) {
-        const prev = s[i - 1];
-        const toPrev = normDir(p, prev);
-        const outDir = { x: -toPrev.x, y: -toPrev.y };
-        drawSpriteCell(p.x, p.y, SPRITES.tail, dirToRotDeg(outDir), COLORS.snake);
-        continue;
-      }
-
-      // Body: decide straight vs turn based on neighbors
-      const prev = s[i - 1];
-      const next = s[i + 1];
-      const d1 = normDir(p, prev);
-      const d2 = normDir(p, next);
-
-      // Straight
-      if (d1.x === 0 && d2.x === 0) {
-        drawSpriteCell(p.x, p.y, SPRITES.body, 90, COLORS.snake);
-        continue;
-      }
-      if (d1.y === 0 && d2.y === 0) {
-        drawSpriteCell(p.x, p.y, SPRITES.body, 0, COLORS.snake);
-        continue;
-      }
-
-      // Turn: base sprite connects Up + Right
-      const hasUp = (d1.y === -1 && d1.x === 0) || (d2.y === -1 && d2.x === 0);
-      const hasDown = (d1.y === 1 && d1.x === 0) || (d2.y === 1 && d2.x === 0);
-      const hasLeft = (d1.x === -1 && d1.y === 0) || (d2.x === -1 && d2.y === 0);
-      const hasRight = (d1.x === 1 && d1.y === 0) || (d2.x === 1 && d2.y === 0);
-
-      let rot = 0;
-      if (hasUp && hasRight) rot = 0;
-      else if (hasRight && hasDown) rot = 90;
-      else if (hasDown && hasLeft) rot = 180;
-      else if (hasLeft && hasUp) rot = 270;
-
-      drawSpriteCell(p.x, p.y, SPRITES.turn, rot, COLORS.snake);
-    }
-
-    if (!state.running) {
-      drawOverlay('按 Enter 开始', '方向键 / WASD 控制');
-    } else if (state.paused && !state.gameOver) {
-      drawOverlay('已暂停', 'Space 继续 / S 单步');
-    } else if (showOverlay && state.gameOver) {
-      drawOverlay('游戏结束', `得分 ${state.score}（Enter 重开）`);
-    }
   }
 
   function togglePause() {
@@ -751,40 +624,45 @@
   function stepOnce() {
     if (!state.running || state.gameOver) return;
     if (!state.paused) return;
-    tick();
+    // simulate a small dt for a single step
+    state.gameTimeMs += 1000 / 60;
+    tick(1000 / 60);
+    draw();
   }
 
   function loop(ts) {
-    if (!state.running) {
-      requestAnimationFrame(loop);
-      return;
-    }
-
     const dt = ts - state.lastTs;
     state.lastTs = ts;
 
-    if (!state.paused && !state.gameOver) {
+    if (state.running && !state.paused && !state.gameOver) {
       state.gameTimeMs += dt;
-
-      // timed systems
-      updateFoods();
-
-      state.accMs += dt;
-      while (state.accMs >= state.tickMs) {
-        state.accMs -= state.tickMs;
-        tick();
-        if (state.gameOver) break;
-      }
+      tick(dt);
     }
 
+    draw();
     requestAnimationFrame(loop);
+  }
+
+  function screenToWorld(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    // convert to world using inverse of worldToScreen
+    const scale = state.scale || 1;
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    return {
+      x: state.head.x + (x - cx) / scale,
+      y: state.head.y + (y - cy) / scale,
+    };
   }
 
   function onKeyDown(e) {
     const k = e.key;
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(k)) {
-      e.preventDefault();
-    }
+
+    // prevent page scroll
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(k)) e.preventDefault();
 
     if (k === 'Enter') {
       resetGame();
@@ -792,77 +670,156 @@
     }
 
     if (k === ' ') {
+      // Space: pause toggle if tapped quickly; sprint is handled via key state.
+      // For simplicity: keep the old behavior of toggling pause on keydown only when not running.
+      // When running: hold = sprint.
+      if (!state.running) return;
+      if (state.paused) {
+        togglePause();
+      } else {
+        state.sprintKeyDown = true;
+      }
+      return;
+    }
+
+    if (k === 'Escape') {
       togglePause();
       return;
     }
 
-    // S: when paused, do a single-step; when running, it should behave as "Down" (WASD)
-    if (k === 's' || k === 'S') {
-      if (state.paused) {
-        stepOnce();
-        return;
-      }
-    }
+    if (k === 'w' || k === 'W' || k === 'ArrowUp') state.keyForward = true;
+    if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyLeft = true;
+    if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyRight = true;
 
-    switch (k) {
-      case 'ArrowUp':
-      case 'w':
-      case 'W':
-        enqueueDir(DIR.Up);
-        break;
-      case 'ArrowDown':
-      case 's':
-      case 'S':
-        enqueueDir(DIR.Down);
-        break;
-      case 'ArrowLeft':
-      case 'a':
-      case 'A':
-        enqueueDir(DIR.Left);
-        break;
-      case 'ArrowRight':
-      case 'd':
-      case 'D':
-        enqueueDir(DIR.Right);
-        break;
+    if ((k === 's' || k === 'S') && state.paused) {
+      stepOnce();
     }
   }
 
+  function onKeyUp(e) {
+    const k = e.key;
+
+    if (k === ' ') {
+      state.sprintKeyDown = false;
+      return;
+    }
+
+    if (k === 'w' || k === 'W' || k === 'ArrowUp') state.keyForward = false;
+    if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyLeft = false;
+    if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyRight = false;
+  }
+
   function init() {
+    // defaults
+    state.showGrid = true; // can be toggled later
+
     loadBest();
     loadDifficulty();
+    loadControlMode();
+
+    setEnergyUI();
 
     state.running = false;
     setStatus('未开始');
+
+    // initial head for camera
+    state.head = { x: WORLD / 2, y: WORLD / 2 };
+    state.angle = 0;
+
     draw();
 
+    window.addEventListener('resize', () => draw());
+
     window.addEventListener('keydown', onKeyDown, { passive: false });
+    window.addEventListener('keyup', onKeyUp, { passive: false });
+
+    canvas.addEventListener('mousemove', (e) => {
+      state.mouseWorld = screenToWorld(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('mousedown', () => {
+      // focus canvas so keyboard works in some browsers
+      canvas.focus?.();
+    });
 
     btnStart.addEventListener('click', () => resetGame());
     btnPause.addEventListener('click', () => togglePause());
     btnStep.addEventListener('click', () => stepOnce());
 
     difficultyEl.addEventListener('change', () => {
-      const prevBase = state.baseTickMs;
-      const prevTick = state.tickMs;
-      const key = difficultyEl.value;
-
-      applyDifficulty(key);
+      applyDifficulty(difficultyEl.value);
       saveDifficulty();
-
-      if (state.running && !state.gameOver) {
-        const mul = prevBase / prevTick;
-        state.tickMs = Math.max(state.minTickMs, Math.round(state.baseTickMs / mul));
-        updateSpeedUI();
-        draw();
-      }
+      if (state.running) resetGame();
     });
 
-    requestAnimationFrame((ts) => {
-      state.lastTs = ts;
-      requestAnimationFrame(loop);
+    controlModeEl.addEventListener('change', () => {
+      state.controlMode = controlModeEl.value === 'mouse' ? 'mouse' : 'keyboard';
+      saveControlMode();
     });
+
+    // start loop
+    state.lastTs = performance.now();
+    requestAnimationFrame(loop);
   }
+
+  const state = {
+    running: false,
+    paused: false,
+    gameOver: false,
+
+    score: 0,
+    best: 0,
+
+    difficulty: 'easy',
+    controlMode: 'keyboard',
+
+    // timing
+    gameTimeMs: 0,
+    lastTs: 0,
+
+    // rendering
+    dpr: 1,
+    cssW: canvas.width,
+    cssH: canvas.height,
+    scale: 24,
+    showGrid: true,
+
+    // movement
+    head: { x: WORLD / 2, y: WORLD / 2 },
+    angle: 0,
+    throttle: 1,
+    baseSpeed: 5.0,
+    baseSpeedMax: 9.0,
+    turnSpeed: 3.8,
+
+    // input
+    keyForward: false,
+    keyLeft: false,
+    keyRight: false,
+
+    mouseWorld: { x: WORLD / 2 + 1, y: WORLD / 2 },
+
+    // body polyline (head to tail)
+    body: [],
+    length: 6.5,
+
+    // foods
+    foods: [],
+    foodCaps: {
+      [FOOD_KIND.APPLE]: 3,
+      [FOOD_KIND.MANGO]: 1,
+      [FOOD_KIND.ROCK]: 4,
+    },
+
+    // buff
+    mangoBuffUntil: 0,
+
+    // sprint energy
+    energy: 1,
+    sprintKeyDown: false,
+    sprinting: false,
+    sprintBurstS: 0,
+  };
 
   init();
 })();

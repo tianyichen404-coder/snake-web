@@ -74,10 +74,29 @@
             <div class="status" id="status">状态：<strong>未开始</strong></div>
           </div>
 
+          <div class="row">
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <div style="font-size:13px; color: var(--muted);">控制方式：</div>
+              <select id="controlMode" aria-label="control mode" style="background: rgba(255,255,255,0.06); color: var(--text); border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 6px 8px;">
+                <option value="keyboard">键盘转向（A/D转向，W前进）</option>
+                <option value="mouse">鼠标指向（蛇头朝向鼠标）</option>
+              </select>
+            </div>
+
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <div style="font-size:13px; color: var(--muted);">冲刺能量：</div>
+              <div style="width:220px; height:10px; border-radius:999px; border:1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.06); overflow:hidden;">
+                <div id="energyFill" style="height:100%; width:100%; background: linear-gradient(90deg, rgba(76,201,240,0.95), rgba(71,209,108,0.95));"></div>
+              </div>
+              <div id="energyText" class="badge" style="font-size:12px; color: var(--muted);">100%</div>
+            </div>
+          </div>
+
           <div class="keys">
-            操作：方向键 / WASD ；暂停：Space；重开：Enter；暂停时单步：S（S 在运行时为向下）<br />
-            难度：切换难度后，建议按 Enter 重新开始以应用新的初始速度。<br />
-            提示：打开本文件即可玩；如遇键盘无效，先点一下画布。
+            模式：30×30 有边界；画面跟随蛇头居中；蛇可 360° 转向；自撞不死亡（可覆盖）。<br />
+            控制：Enter 开始/重开；Space 暂停；按住 Space 可冲刺（消耗能量，充能 10 秒，消耗速度为充能的 2 倍，单次最多冲刺 5 秒）。<br />
+            键盘转向：W 前进，A/D 转向；鼠标模式：蛇头朝向鼠标，自动前进。<br />
+            提示：如遇键盘无效，先点一下画布。
           </div>
           <div class="hint">保存最高分：使用本地 localStorage（不联网）。</div>
         </div>
@@ -85,6 +104,6 @@
     </div>
 
     <!-- Cache-bust: update the v= whenever logic changes so GitHub Pages clients get fresh JS -->
-    <script src="main.js?v=20260305-1"></script>
+    <script src="main.js?v=20260305-2"></script>
   </body>
 </html>
