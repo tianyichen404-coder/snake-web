@@ -34,6 +34,18 @@
     shadow: 'rgba(0,0,0,0.35)',
   };
 
+  // Snake sprites (cartoon-flat, 32x32). If images are missing/not loaded, we fallback to the old block style.
+  const SPRITES = {
+    head: new Image(),
+    body: new Image(),
+    tail: new Image(),
+    turn: new Image(),
+  };
+  SPRITES.head.src = 'assets/head.png';
+  SPRITES.body.src = 'assets/body.png';
+  SPRITES.tail.src = 'assets/tail.png';
+  SPRITES.turn.src = 'assets/turn.png';
+
   const LS_BEST = 'snake_web_best_v1';
   const LS_DIFFICULTY = 'snake_web_difficulty_v1';
 
@@ -568,6 +580,39 @@
     roundRectFill(x + 1, y + 1, CELL - 4, CELL - 4, r);
   }
 
+  function dirToRotDeg(d) {
+    if (d.x === 1 && d.y === 0) return 0;
+    if (d.x === 0 && d.y === 1) return 90;
+    if (d.x === -1 && d.y === 0) return 180;
+    if (d.x === 0 && d.y === -1) return 270;
+    return 0;
+  }
+
+  function normDir(from, to) {
+    const dx = Math.sign(to.x - from.x);
+    const dy = Math.sign(to.y - from.y);
+    return { x: dx, y: dy };
+  }
+
+  function drawSpriteCell(gx, gy, img, rotDeg, fallbackColor) {
+    const x = PAD + gx * CELL;
+    const y = PAD + gy * CELL;
+
+    if (!img || !img.complete || !img.naturalWidth) {
+      drawCell(gx, gy, fallbackColor || COLORS.snake, false);
+      return;
+    }
+
+    const cx = x + CELL / 2;
+    const cy = y + CELL / 2;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((rotDeg * Math.PI) / 180);
+    ctx.drawImage(img, -CELL / 2, -CELL / 2, CELL, CELL);
+    ctx.restore();
+  }
+
   function drawOverlay(title, subtitle) {
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -619,11 +664,55 @@
       }
     }
 
-    // snake
-    for (let i = state.snake.length - 1; i >= 0; i--) {
-      const p = state.snake[i];
-      const isHead = i === 0;
-      drawCell(p.x, p.y, isHead ? COLORS.snakeHead : COLORS.snake, false);
+    // snake (sprite-based)
+    const s = state.snake;
+    for (let i = s.length - 1; i >= 0; i--) {
+      const p = s[i];
+
+      // Head: use current moving direction
+      if (i === 0) {
+        drawSpriteCell(p.x, p.y, SPRITES.head, dirToRotDeg(state.dir), COLORS.snakeHead);
+        continue;
+      }
+
+      // Tail: point away from the previous segment
+      if (i === s.length - 1) {
+        const prev = s[i - 1];
+        const toPrev = normDir(p, prev);
+        const outDir = { x: -toPrev.x, y: -toPrev.y };
+        drawSpriteCell(p.x, p.y, SPRITES.tail, dirToRotDeg(outDir), COLORS.snake);
+        continue;
+      }
+
+      // Body: decide straight vs turn based on neighbors
+      const prev = s[i - 1];
+      const next = s[i + 1];
+      const d1 = normDir(p, prev);
+      const d2 = normDir(p, next);
+
+      // Straight
+      if (d1.x === 0 && d2.x === 0) {
+        drawSpriteCell(p.x, p.y, SPRITES.body, 90, COLORS.snake);
+        continue;
+      }
+      if (d1.y === 0 && d2.y === 0) {
+        drawSpriteCell(p.x, p.y, SPRITES.body, 0, COLORS.snake);
+        continue;
+      }
+
+      // Turn: base sprite connects Up + Right
+      const hasUp = (d1.y === -1 && d1.x === 0) || (d2.y === -1 && d2.x === 0);
+      const hasDown = (d1.y === 1 && d1.x === 0) || (d2.y === 1 && d2.x === 0);
+      const hasLeft = (d1.x === -1 && d1.y === 0) || (d2.x === -1 && d2.y === 0);
+      const hasRight = (d1.x === 1 && d1.y === 0) || (d2.x === 1 && d2.y === 0);
+
+      let rot = 0;
+      if (hasUp && hasRight) rot = 0;
+      else if (hasRight && hasDown) rot = 90;
+      else if (hasDown && hasLeft) rot = 180;
+      else if (hasLeft && hasUp) rot = 270;
+
+      drawSpriteCell(p.x, p.y, SPRITES.turn, rot, COLORS.snake);
     }
 
     if (!state.running) {
