@@ -468,12 +468,13 @@
 
   function updateControl(dtS) {
     if (state.controlMode === 'keyboard') {
-      // A/D: turn, W: forward
+      // Keyboard: always move forward; WASD only changes direction
+      // A/D: turn
       const turn = (state.keyRight ? 1 : 0) - (state.keyLeft ? 1 : 0);
       state.angle = wrapAngle(state.angle + turn * state.turnSpeed * dtS);
 
-      const forward = state.keyForward ? 1 : 0;
-      state.throttle = forward;
+      // Optional: allow W/S to slightly bias forward/back (disabled by default)
+      state.throttle = 1;
     } else {
       // mouse: always forward, angle follows mouse
       state.throttle = 1;
@@ -687,7 +688,15 @@
       return;
     }
 
-    if (k === 'w' || k === 'W' || k === 'ArrowUp') state.keyForward = true;
+    // WASD/Arrow keys are used to change direction (turning). Movement is always forward by default.
+    if (k === 'w' || k === 'W' || k === 'ArrowUp') {
+      // instant face up
+      state.angle = -Math.PI / 2;
+    }
+    if (k === 's' || k === 'S' || k === 'ArrowDown') {
+      // instant face down
+      state.angle = Math.PI / 2;
+    }
     if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyLeft = true;
     if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyRight = true;
 
@@ -704,7 +713,6 @@
       return;
     }
 
-    if (k === 'w' || k === 'W' || k === 'ArrowUp') state.keyForward = false;
     if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyLeft = false;
     if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyRight = false;
   }
