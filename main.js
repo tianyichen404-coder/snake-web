@@ -477,24 +477,22 @@
 
   function updateControl(dtS) {
     if (state.controlMode === 'keyboard') {
-      // Keyboard: always move forward; WASD only changes direction
-      // A/D: turn
-      const turn = (state.keyRight ? 1 : 0) - (state.keyLeft ? 1 : 0);
-      state.angle = wrapAngle(state.angle + turn * state.turnSpeed * dtS);
+      // No-turn-radius mode: instant direction changes (hard corners)
+      // WASD / arrows set the facing direction immediately.
+      if (state.keyFaceUp) state.angle = -Math.PI / 2;
+      else if (state.keyFaceDown) state.angle = Math.PI / 2;
+      else if (state.keyFaceLeft) state.angle = Math.PI;
+      else if (state.keyFaceRight) state.angle = 0;
 
-      // Optional: allow W/S to slightly bias forward/back (disabled by default)
       state.throttle = 1;
     } else {
-      // mouse: always forward, angle follows mouse
+      // mouse: always forward, face mouse instantly (no turn radius)
       state.throttle = 1;
 
       const dx = state.mouseWorld.x - state.head.x;
       const dy = state.mouseWorld.y - state.head.y;
       if (dx * dx + dy * dy > 1e-6) {
-        const target = Math.atan2(dy, dx);
-        const d = angleDelta(state.angle, target);
-        const maxTurn = state.turnSpeed * dtS;
-        state.angle = wrapAngle(state.angle + clamp(d, -maxTurn, maxTurn));
+        state.angle = wrapAngle(Math.atan2(dy, dx));
       }
     }
   }
@@ -692,17 +690,11 @@
       return;
     }
 
-    // WASD/Arrow keys are used to change direction (turning). Movement is always forward by default.
-    if (k === 'w' || k === 'W' || k === 'ArrowUp') {
-      // instant face up
-      state.angle = -Math.PI / 2;
-    }
-    if (k === 's' || k === 'S' || k === 'ArrowDown') {
-      // instant face down
-      state.angle = Math.PI / 2;
-    }
-    if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyLeft = true;
-    if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyRight = true;
+    // WASD/Arrow keys change facing direction instantly.
+    if (k === 'w' || k === 'W' || k === 'ArrowUp') state.keyFaceUp = true;
+    if (k === 's' || k === 'S' || k === 'ArrowDown') state.keyFaceDown = true;
+    if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyFaceLeft = true;
+    if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyFaceRight = true;
 
     if ((k === 's' || k === 'S') && state.paused) {
       stepOnce();
@@ -717,8 +709,10 @@
       return;
     }
 
-    if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyLeft = false;
-    if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyRight = false;
+    if (k === 'w' || k === 'W' || k === 'ArrowUp') state.keyFaceUp = false;
+    if (k === 's' || k === 'S' || k === 'ArrowDown') state.keyFaceDown = false;
+    if (k === 'a' || k === 'A' || k === 'ArrowLeft') state.keyFaceLeft = false;
+    if (k === 'd' || k === 'D' || k === 'ArrowRight') state.keyFaceRight = false;
   }
 
   function init() {
@@ -805,9 +799,10 @@
     turnSpeed: 3.8,
 
     // input
-    keyForward: false,
-    keyLeft: false,
-    keyRight: false,
+    keyFaceUp: false,
+    keyFaceDown: false,
+    keyFaceLeft: false,
+    keyFaceRight: false,
 
     mouseWorld: { x: WORLD / 2 + 1, y: WORLD / 2 },
 
