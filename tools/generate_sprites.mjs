@@ -221,9 +221,65 @@ function writeSprite(name, img) {
   fs.writeFileSync(path.join(OUT_DIR, name), png);
 }
 
+function makeApple() {
+  const img = makeCanvas(32, 32);
+  const red = [235, 69, 90, 255];
+  const red2 = [255, 121, 129, 220];
+  const stem = [90, 65, 45, 255];
+  const leaf = [63, 200, 110, 255];
+
+  fillRoundRect(img, 7, 8, 18, 18, 9, red);
+  fillCircle(img, 16, 10, 7, red);
+  // highlight
+  fillRoundRect(img, 10, 11, 6, 10, 4, [red2[0], red2[1], red2[2], 120]);
+  // stem
+  fillRoundRect(img, 15, 4, 3, 6, 2, stem);
+  // leaf
+  fillRoundRect(img, 18, 5, 8, 4, 3, [leaf[0], leaf[1], leaf[2], 230]);
+  strokeRoundRect(img, 7, 8, 18, 18, 9, 1, C.outline);
+  return img;
+}
+
+function makeMango() {
+  const img = makeCanvas(32, 32);
+  const yellow = [255, 209, 102, 255];
+  const orange = [255, 170, 64, 255];
+  const green = [110, 220, 140, 255];
+
+  // mango body (slanted oval-ish)
+  fillRoundRect(img, 7, 7, 18, 20, 10, yellow);
+  fillRoundRect(img, 10, 9, 16, 18, 9, [orange[0], orange[1], orange[2], 160]);
+  // small green tip
+  fillRoundRect(img, 6, 9, 6, 6, 4, [green[0], green[1], green[2], 210]);
+  // highlight
+  fillRoundRect(img, 12, 11, 6, 11, 4, [255, 255, 255, 70]);
+  strokeRoundRect(img, 7, 7, 18, 20, 10, 1, C.outline);
+  return img;
+}
+
+function makeRock() {
+  const img = makeCanvas(32, 32);
+  const g1 = [154, 164, 178, 255];
+  const g2 = [120, 130, 145, 255];
+  const g3 = [190, 198, 210, 200];
+
+  // chunky rock
+  fillRoundRect(img, 6, 10, 20, 16, 6, g1);
+  fillRoundRect(img, 9, 12, 18, 14, 6, [g2[0], g2[1], g2[2], 170]);
+  // facets
+  fillRoundRect(img, 10, 13, 7, 5, 3, [g3[0], g3[1], g3[2], 160]);
+  fillRoundRect(img, 18, 17, 6, 4, 3, [255, 255, 255, 45]);
+  strokeRoundRect(img, 6, 10, 20, 16, 6, 1, C.outline);
+  return img;
+}
+
 writeSprite('body.png', makeBody());
 writeSprite('head.png', makeHead());
 writeSprite('tail.png', makeTail());
 writeSprite('turn.png', makeTurn());
+
+writeSprite('apple.png', makeApple());
+writeSprite('mango.png', makeMango());
+writeSprite('rock.png', makeRock());
 
 console.log('Wrote sprites to', OUT_DIR);

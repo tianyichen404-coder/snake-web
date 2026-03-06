@@ -46,6 +46,7 @@
   SPRITES.tail.src = 'assets/tail.png';
   SPRITES.turn.src = 'assets/turn.png';
 
+
   const LS_BEST = 'snake_web_best_v1';
   const LS_DIFFICULTY = 'snake_web_difficulty_v1';
 
@@ -61,6 +62,16 @@
     YELLOW: 'yellow',
     GRAY: 'gray',
   };
+
+  // Food sprites
+  const FOOD_SPRITES = {
+    [FOOD_KIND.RED]: new Image(), // apple
+    [FOOD_KIND.YELLOW]: new Image(), // mango
+    [FOOD_KIND.GRAY]: new Image(), // rock
+  };
+  FOOD_SPRITES[FOOD_KIND.RED].src = 'assets/apple.png';
+  FOOD_SPRITES[FOOD_KIND.YELLOW].src = 'assets/mango.png';
+  FOOD_SPRITES[FOOD_KIND.GRAY].src = 'assets/rock.png';
 
   // Global TTL rule: all foods expire and blink before disappearing.
   const FOOD_TTL_MS = 10000;
@@ -659,8 +670,14 @@
       const visible = !blinking || (((remaining / 200) | 0) % 2 === 0);
       if (!visible) continue;
 
+      const sprite = FOOD_SPRITES[f.kind];
       for (const c of foodCells(f)) {
-        drawCell(c.x, c.y, def.color, true);
+        // Foods don't need rotation; fallback to old colored blocks if sprite missing
+        if (sprite && sprite.complete && sprite.naturalWidth) {
+          drawSpriteCell(c.x, c.y, sprite, 0, def.color);
+        } else {
+          drawCell(c.x, c.y, def.color, true);
+        }
       }
     }
 
