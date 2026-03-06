@@ -59,8 +59,9 @@
     [FOOD_KIND.MANGO]: new Image(),
     [FOOD_KIND.ROCK]: new Image(),
   };
-  FOOD_SPRITES[FOOD_KIND.APPLE].src = 'assets/apple.png';
-  FOOD_SPRITES[FOOD_KIND.MANGO].src = 'assets/mango.png';
+  // User-specified food sprites
+  FOOD_SPRITES[FOOD_KIND.APPLE].src = 'assets/Basketball.png';
+  FOOD_SPRITES[FOOD_KIND.MANGO].src = 'assets/油饼.png';
   FOOD_SPRITES[FOOD_KIND.ROCK].src = 'assets/rock.png';
 
   const LS_BEST = 'snake_web_best_v1';
@@ -348,7 +349,7 @@
     if (!state.running) {
       drawOverlay('按 Enter 开始', '选择控制方式后开始');
     } else if (state.paused && !state.gameOver) {
-      drawOverlay('已暂停', 'Space 继续 / 单步按钮');
+      drawOverlay('已暂停', 'Q 继续 / 单步按钮');
     } else if (showOverlay && state.gameOver) {
       drawOverlay('游戏结束', `得分 ${state.score}（Enter 重开）`);
     }
@@ -359,10 +360,18 @@
   }
 
   function spawnFood(kind) {
-    // ensure not too close to head
-    for (let tries = 0; tries < 2000; tries++) {
-      const x = rand(1, WORLD - 1);
-      const y = rand(1, WORLD - 1);
+    // Spawn on grid cells, but grid lines are hidden.
+    // Use cell centers (i + 0.5, j + 0.5) so they feel aligned.
+    for (let tries = 0; tries < 5000; tries++) {
+      const gx = (Math.random() * WORLD) | 0;
+      const gy = (Math.random() * WORLD) | 0;
+      const x = gx + 0.5;
+      const y = gy + 0.5;
+
+      // Keep within safe border margin (food size ~ 1 unit)
+      if (x < 0.75 || y < 0.75 || x > WORLD - 0.75 || y > WORLD - 0.75) continue;
+
+      // ensure not too close to head
       const dx = x - state.head.x;
       const dy = y - state.head.y;
       if (dx * dx + dy * dy < 6) continue;
@@ -670,21 +679,16 @@
       return;
     }
 
-    if (k === ' ') {
-      // Space: pause toggle if tapped quickly; sprint is handled via key state.
-      // For simplicity: keep the old behavior of toggling pause on keydown only when not running.
-      // When running: hold = sprint.
-      if (!state.running) return;
-      if (state.paused) {
-        togglePause();
-      } else {
-        state.sprintKeyDown = true;
-      }
+    // Q: pause / resume
+    if (k === 'q' || k === 'Q') {
+      togglePause();
       return;
     }
 
-    if (k === 'Escape') {
-      togglePause();
+    // Space: sprint (hold). No longer used for pause.
+    if (k === ' ') {
+      if (!state.running || state.gameOver || state.paused) return;
+      state.sprintKeyDown = true;
       return;
     }
 
@@ -719,7 +723,7 @@
 
   function init() {
     // defaults
-    state.showGrid = true; // can be toggled later
+    state.showGrid = false; // hide grid lines (foods still spawn on grid)
 
     loadBest();
     loadDifficulty();
